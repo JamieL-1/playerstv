@@ -63,6 +63,25 @@ better): old cq 35 → 13.1 dB, tuned 4:2:0 → 16.5 dB, tuned 4:4:4 → 22.9 dB
 Choosing a fixed resolution larger than the game window upscales (bicubic):
 no extra detail locally, though YouTube gives higher resolutions more bitrate.
 
+## Download
+
+Grab `playerstv-vX.Y.Z-windows-x64.zip` from the
+[Releases](../../releases) page, unzip it anywhere and run `playerstv.exe`
+(it lives in the system tray). The zip includes FFmpeg. The app isn't
+code-signed yet, so SmartScreen may ask: **More info → Run anyway**.
+
+### Making a release
+
+Releases are built by `.github/workflows/release.yml`:
+
+1. Bump `version` in the root `Cargo.toml`, commit.
+2. `git tag v0.2.0 && git push origin v0.2.0` — the workflow tests, builds,
+   packages (`scripts/package.ps1`) and publishes the release with the zip
+   and its SHA-256.
+
+To try the pipeline without publishing: **Actions → Release → Run workflow**
+with *dry run* ticked; the zip is attached to the run as an artifact.
+
 ## Requirements
 
 - Windows 10 2004+ / Windows 11 (per-process audio loopback, WGC capture)

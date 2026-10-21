@@ -1,0 +1,106 @@
+# Builds playerstv and publishes a downloadable zip as a GitHub Release.
+#
+# Release:  bump `version` in Cargo.toml, commit, then
+#             git tag v0.2.0 && git push origin v0.2.0
+# Test run: Actions -> Release -> Run workflow (dry run builds the zip and
+#           attaches it to the run as an artifact, without publishing).
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag (e.g. v0.1.0); must match the version in Cargo.toml"
+        required: true
+      dry_run:
+        description: "Build and package only, don't publish a release"
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.event.inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  TAG: ${{ github.event.inputs.tag || github.ref_name }}
+  CARGO_TERM_COLOR: always
+
+jobs:
+  release:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check tag matches Cargo.toml version
+        run: |
+          $version = (Select-String -Path Cargo.toml -Pattern '^version\s*=\s*"([^"]+)"').Matches[0].Groups[1].Value
+          if ("v$version" -ne $env:TAG) {
+            throw "Tag $env:TAG doesn't match Cargo.toml version $version (expected v$version)"
+          }
+          Write-Host "Releasing $env:TAG"
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Cache FFmpeg download
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/ffmpeg-cache
+          key: ffmpeg-${{ hashFiles('scripts/fetch-ffmpeg.ps1') }}
+
+      - name: Fetch FFmpeg
+        run: |
+          # The script caches its zip in %TEMP%; point that at the cached dir.
+          $env:TEMP = "${{ runner.temp }}/ffmpeg-cache"; $env:TMP = $env:TEMP
+          New-Item -ItemType Directory -Force $env:TEMP | Out-Null
+          ./scripts/fetch-ffmpeg.ps1
+
+      - name: Test
+        run: cargo test --workspace --locked
+
+      - name: Build
+        run: cargo build --release --locked
+
+      - name: Package
+        run: ./scripts/package.ps1 -Version $env:TAG
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: playerstv-${{ env.TAG }}-windows-x64
+          path: |
+            dist/*.zip
+            dist/*.sha256
+
+      - name: Publish release
+        if: github.event_name == 'push' || github.event.inputs.dry_run == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $zip = "dist/playerstv-$env:TAG-windows-x64.zip"
+          $notes = @"
+          ## Download
+
+          1. Download **playerstv-$env:TAG-windows-x64.zip** below and unzip it anywhere.
+          2. Run ``playerstv.exe`` - it lives in the system tray. Left-click the tray icon for the window.
+
+          Needs Windows 10 2004+ / 11 and an NVIDIA GPU (NVENC). Windows SmartScreen may warn
+          because the app isn't code-signed: **More info -> Run anyway**.
+
+          SHA-256: ``$((Get-Content "$zip.sha256").Split(' ')[0])``
+          "@
+          # Without --target, gh tags the default branch; use the built commit.
+          gh release create $env:TAG $zip "$zip.sha256" `
+            --title "playerstv $env:TAG" `
+            --notes $notes `
+            --generate-notes `
+            --target $env:GITHUB_SHA
