@@ -1,0 +1,15 @@
+[package]
+name = "playerstv-capture"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+name = "ptv_capture"
+
+[dependencies]
+anyhow.workspace = true
+crossbeam-channel.workspace = true
+playerstv-core = { version = "0.1.0", path = "../core" }
+tracing.workspace = true
+wasapi = "0.26.0"
+windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_System_Threading", "Win32_System_Pipes", "Win32_Storage_FileSystem", "Win32_System_IO", "Win32_Security", "Win32_Graphics_Dwm", "Win32_Media_Audio", "Win32_Media_Audio_Endpoints", "Win32_System_Com"] }

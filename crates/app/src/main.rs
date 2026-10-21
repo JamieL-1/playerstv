@@ -1,0 +1,130 @@
+// Release builds are a GUI-subsystem app (no console window); debug builds
+// keep the console for logs.
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
+mod autostart;
+mod control;
+mod export;
+mod paths;
+mod recorder;
+mod settings;
+mod supervisor;
+mod tray;
+
+use std::sync::Arc;
+use std::time::Duration;
+
+use anyhow::{bail, Result};
+use ptv_core::config::Config;
+use tracing_subscriber::EnvFilter;
+use windows::Win32::Foundation::{GetLastError, ERROR_ALREADY_EXISTS};
+use windows::Win32::System::Threading::CreateMutexW;
+
+fn main() {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let result = match args.first().map(String::as_str) {
+        Some("--settings") => settings::run(),
+        Some("--smoke") => {
+            let secs = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(15);
+            smoke(secs)
+        }
+        _ => run_tray(),
+    };
+    if let Err(e) = result {
+        tracing::error!("{e:#}");
+        eprintln!("playerstv: {e:#}");
+        std::process::exit(1);
+    }
+}
+
+fn run_tray() -> Result<()> {
+    let _guard = init_logging(false);
+    // Named mutex: only one tray instance at a time. The handle stays open
+    // (and the mutex held) until the process exits.
+    unsafe {
+        let _mutex = CreateMutexW(None, false, &paths::mutex_name("tray"))?;
+        if GetLastError() == ERROR_ALREADY_EXISTS {
+            tracing::info!("already running");
+            return Ok(());
+        }
+    }
+    let cfg = Config::load_or_create(&paths::config_file())?;
+    tracing::info!("playerstv {} starting, config {}", env!("CARGO_PKG_VERSION"), paths::config_file().display());
+    tray::run(cfg)
+}
+
+/// `playerstv --smoke N`: headless end-to-end check. Waits for the game,
+/// records for N seconds, saves a clip and exits.
+fn smoke(secs: u64) -> Result<()> {
+    attach_console();
+    let _guard = init_logging(true);
+    let cfg = Config::load_or_create(&paths::config_file())?;
+    let ffmpeg = paths::ffmpeg_exe();
+    tracing::info!("using ffmpeg at {}", ffmpeg.display());
+
+    let (cmd_tx, cmd_rx) = crossbeam_channel::unbounded();
+    let (ev_tx, ev_rx) = crossbeam_channel::unbounded();
+    let sink: supervisor::EventSink = Arc::new(move |e| {
+        let _ = ev_tx.send(e);
+    });
+    let sup = supervisor::Supervisor::new(cfg, ffmpeg, sink);
+    let handle = std::thread::spawn(move || sup.run(cmd_rx));
+
+    let wait_until = |pred: &dyn Fn(&supervisor::Event) -> bool, timeout: Duration| -> Result<supervisor::Event> {
+        let deadline = std::time::Instant::now() + timeout;
+        loop {
+            let left = deadline.saturating_duration_since(std::time::Instant::now());
+            match ev_rx.recv_timeout(left) {
+                Ok(e) => {
+                    tracing::info!("event: {e:?}");
+                    if pred(&e) {
+                        return Ok(e);
+                    }
+                }
+                Err(_) => bail!("timed out"),
+            }
+        }
+    };
+
+    wait_until(
+        &|e| matches!(e, supervisor::Event::Status(supervisor::Status::Recording { .. })),
+        Duration::from_secs(30),
+    )?;
+    tracing::info!("recording for {secs}s...");
+    std::thread::sleep(Duration::from_secs(secs));
+    cmd_tx.send(supervisor::Command::SaveClip)?;
+    let saved = wait_until(
+        &|e| matches!(e, supervisor::Event::Saved { .. } | supervisor::Event::Error(_)),
+        Duration::from_secs(30),
+    )?;
+    cmd_tx.send(supervisor::Command::Shutdown)?;
+    let _ = handle.join();
+    match saved {
+        supervisor::Event::Saved { path, .. } => {
+            println!("{}", path.display());
+            Ok(())
+        }
+        other => bail!("clip failed: {other:?}"),
+    }
+}
+
+fn init_logging(to_stderr: bool) -> Option<tracing_appender::non_blocking::WorkerGuard> {
+    let filter = EnvFilter::try_from_env("PLAYERSTV_LOG").unwrap_or_else(|_| EnvFilter::new("info"));
+    if to_stderr {
+        tracing_subscriber::fmt().with_env_filter(filter).with_writer(std::io::stderr).init();
+        return None;
+    }
+    let appender = tracing_appender::rolling::daily(paths::log_dir(), "playerstv.log");
+    let (writer, guard) = tracing_appender::non_blocking(appender);
+    tracing_subscriber::fmt().with_env_filter(filter).with_ansi(false).with_writer(writer).init();
+    Some(guard)
+}
+
+/// Release builds have no console; reuse the parent's so CLI modes can print.
+fn attach_console() {
+    #[cfg(not(debug_assertions))]
+    unsafe {
+        use windows::Win32::System::Console::{AttachConsole, ATTACH_PARENT_PROCESS};
+        let _ = AttachConsole(ATTACH_PARENT_PROCESS);
+    }
+}
