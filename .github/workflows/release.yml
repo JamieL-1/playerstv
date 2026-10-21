@@ -1,33 +1,34 @@
-# Builds playerstv and publishes a downloadable zip as a GitHub Release.
+# One-click release: Actions -> Release -> Run workflow.
 #
-# Release:  bump `version` in Cargo.toml, commit, then
-#             git tag v0.2.0 && git push origin v0.2.0
-# Test run: Actions -> Release -> Run workflow (dry run builds the zip and
-#           attaches it to the run as an artifact, without publishing).
+# Bumps the version (or keeps it with "none"), tests, builds and packages the
+# app, and only if all of that succeeds: pushes a "Release vX.Y.Z" commit to
+# main, creates the vX.Y.Z tag and publishes a GitHub Release with the zip.
+# With "dry run" ticked nothing is pushed or published; the zip is attached
+# to the run as an artifact instead.
 name: Release
 
 on:
-  push:
-    tags: ["v*"]
   workflow_dispatch:
     inputs:
-      tag:
-        description: "Release tag (e.g. v0.1.0); must match the version in Cargo.toml"
-        required: true
+      bump:
+        description: "Version bump (none = release the version already in Cargo.toml)"
+        type: choice
+        options: [patch, minor, major, none]
+        default: patch
       dry_run:
-        description: "Build and package only, don't publish a release"
+        description: "Dry run: build and package only, don't push or publish"
         type: boolean
-        default: true
+        default: false
 
 permissions:
   contents: write
 
+# Two releases at once would race for the same version number.
 concurrency:
-  group: release-${{ github.event.inputs.tag || github.ref_name }}
+  group: release
   cancel-in-progress: false
 
 env:
-  TAG: ${{ github.event.inputs.tag || github.ref_name }}
   CARGO_TERM_COLOR: always
 
 jobs:
@@ -37,19 +38,31 @@ jobs:
       run:
         shell: pwsh
     steps:
-      - uses: actions/checkout@v4
+      - name: Only release from main
+        if: github.ref != 'refs/heads/main' && !inputs.dry_run
+        run: throw "Releases are made from main (this run is on ${{ github.ref_name }}). Use dry run to test other branches."
 
-      - name: Check tag matches Cargo.toml version
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # tags, to check the new one doesn't exist yet
+
+      - name: Work out version
+        id: version
         run: |
-          $version = (Select-String -Path Cargo.toml -Pattern '^version\s*=\s*"([^"]+)"').Matches[0].Groups[1].Value
-          if ("v$version" -ne $env:TAG) {
-            throw "Tag $env:TAG doesn't match Cargo.toml version $version (expected v$version)"
-          }
-          Write-Host "Releasing $env:TAG"
+          $version = ./scripts/bump-version.ps1 -Bump ${{ inputs.bump }}
+          $tag = "v$version"
+          if (git tag --list $tag) { throw "Tag $tag already exists. Pick a bump that gives a new version." }
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "tag=$tag" >> $env:GITHUB_OUTPUT
+          Write-Host "Releasing $tag"
 
       - uses: dtolnay/rust-toolchain@stable
 
       - uses: Swatinem/rust-cache@v2
+
+      - name: Update Cargo.lock for the new version
+        if: inputs.bump != 'none'
+        run: cargo update --workspace
 
       - name: Cache FFmpeg download
         uses: actions/cache@v4
@@ -71,20 +84,31 @@ jobs:
         run: cargo build --release --locked
 
       - name: Package
-        run: ./scripts/package.ps1 -Version $env:TAG
+        run: ./scripts/package.ps1 -Version ${{ steps.version.outputs.tag }}
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: playerstv-${{ env.TAG }}-windows-x64
+          name: playerstv-${{ steps.version.outputs.tag }}-windows-x64
           path: |
             dist/*.zip
             dist/*.sha256
 
-      - name: Publish release
-        if: github.event_name == 'push' || github.event.inputs.dry_run == 'false'
+      - name: Commit version bump
+        if: inputs.bump != 'none' && !inputs.dry_run
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Cargo.toml Cargo.lock
+          git commit -m "Release ${{ steps.version.outputs.tag }}"
+          # Fails (and publishes nothing) if main moved on during the build.
+          git push origin HEAD:main
+
+      - name: Tag and publish release
+        if: ${{ !inputs.dry_run }}
         env:
           GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
         run: |
           $zip = "dist/playerstv-$env:TAG-windows-x64.zip"
           $notes = @"
@@ -98,9 +122,9 @@ jobs:
 
           SHA-256: ``$((Get-Content "$zip.sha256").Split(' ')[0])``
           "@
-          # Without --target, gh tags the default branch; use the built commit.
+          # Creates the tag on the commit that was built (incl. the bump commit).
           gh release create $env:TAG $zip "$zip.sha256" `
+            --target (git rev-parse HEAD) `
             --title "playerstv $env:TAG" `
             --notes $notes `
-            --generate-notes `
-            --target $env:GITHUB_SHA
+            --generate-notes

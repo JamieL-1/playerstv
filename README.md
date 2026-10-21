@@ -72,15 +72,15 @@ code-signed yet, so SmartScreen may ask: **More info → Run anyway**.
 
 ### Making a release
 
-Releases are built by `.github/workflows/release.yml`:
+**Actions → Release → Run workflow**, pick a version bump (`patch`, `minor`,
+`major`, or `none` to release the version already in `Cargo.toml`) and run.
+`.github/workflows/release.yml` then bumps the version, tests, builds and
+packages (`scripts/package.ps1`), and — only if all of that passes — pushes a
+`Release vX.Y.Z` commit to `main`, creates the `vX.Y.Z` tag and publishes the
+release with the zip and its SHA-256. Pull afterwards to get the bump commit.
 
-1. Bump `version` in the root `Cargo.toml`, commit.
-2. `git tag v0.2.0 && git push origin v0.2.0` — the workflow tests, builds,
-   packages (`scripts/package.ps1`) and publishes the release with the zip
-   and its SHA-256.
-
-To try the pipeline without publishing: **Actions → Release → Run workflow**
-with *dry run* ticked; the zip is attached to the run as an artifact.
+Tick *dry run* to build without pushing or publishing; the zip is attached to
+the run as an artifact.
 
 ## Requirements
 
