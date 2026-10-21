@@ -79,9 +79,7 @@ pub fn parse_index(file_name: &str) -> Option<u64> {
 
 /// Whether segment `index` exists in either container format.
 pub fn segment_exists(dir: &Path, index: u64) -> bool {
-    [Container::MpegTs, Container::Matroska]
-        .iter()
-        .any(|c| dir.join(segment_file_name(index, *c)).exists())
+    [Container::MpegTs, Container::Matroska].iter().any(|c| dir.join(segment_file_name(index, *c)).exists())
 }
 
 /// All segments in `dir`, oldest first.
@@ -90,10 +88,7 @@ pub fn scan(dir: &Path) -> std::io::Result<Vec<Segment>> {
         .filter_map(|e| e.ok())
         .filter_map(|e| {
             let name = e.file_name();
-            parse_index(name.to_str()?).map(|index| Segment {
-                index,
-                path: e.path(),
-            })
+            parse_index(name.to_str()?).map(|index| Segment { index, path: e.path() })
         })
         .collect();
     segs.sort_by_key(|s| s.index);
@@ -134,12 +129,7 @@ mod tests {
     use super::*;
 
     fn segs(range: std::ops::Range<u64>) -> Vec<Segment> {
-        range
-            .map(|i| Segment {
-                index: i,
-                path: PathBuf::from(segment_file_name(i, Container::MpegTs)),
-            })
-            .collect()
+        range.map(|i| Segment { index: i, path: PathBuf::from(segment_file_name(i, Container::MpegTs)) }).collect()
     }
 
     #[test]

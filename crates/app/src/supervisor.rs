@@ -8,7 +8,6 @@ use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use chrono::Local;
-use serde::{Deserialize, Serialize};
 use crossbeam_channel::{Receiver, RecvTimeoutError};
 use ptv_capture::detect::{self, GameWindow};
 use ptv_core::clip::{self, ExportKind};
@@ -16,6 +15,7 @@ use ptv_core::config::Config;
 use ptv_core::profile::{safe_name, ProfileMatcher};
 use ptv_core::ring::{self, Segment};
 use ptv_core::storage;
+use serde::{Deserialize, Serialize};
 
 use crate::export;
 use crate::paths;
@@ -50,7 +50,10 @@ pub enum Status {
         video: String,
     },
     /// Game found but the encoder keeps failing.
-    Failing { game: String, error: String },
+    Failing {
+        game: String,
+        error: String,
+    },
 }
 
 impl Status {
@@ -73,9 +76,15 @@ pub fn unix_now() -> u64 {
 #[derive(Debug, Clone)]
 pub enum Event {
     Status(Status),
-    Saved { path: PathBuf, kind: ExportKind },
+    Saved {
+        path: PathBuf,
+        kind: ExportKind,
+    },
     /// Old recordings were deleted to stay under the storage limit.
-    Cleaned { count: usize, bytes: u64 },
+    Cleaned {
+        count: usize,
+        bytes: u64,
+    },
     Error(String),
 }
 
@@ -108,13 +117,16 @@ pub struct Supervisor {
     sink: EventSink,
     active: Option<Active>,
     exports_in_flight: Arc<AtomicUsize>,
+    storage: SharedStoragePolicy,
     last_scan: Option<Instant>,
     last_status: Option<Status>,
 }
 
 impl Supervisor {
     pub fn new(cfg: Config, ffmpeg: PathBuf, sink: EventSink) -> Self {
+        let storage = Arc::new(std::sync::Mutex::new(StoragePolicy::of(&cfg)));
         Self {
+            storage,
             matchers: matchers(&cfg),
             cfg,
             ffmpeg,
@@ -199,9 +211,9 @@ impl Supervisor {
         if let Some(rec) = active.recorder.take() {
             rec.stop();
         }
-        let has_session_footage = active.session_from.is_some_and(|from| {
-            ring::scan(&active.dir).unwrap_or_default().iter().any(|s| s.index >= from)
-        });
+        let has_session_footage = active
+            .session_from
+            .is_some_and(|from| ring::scan(&active.dir).unwrap_or_default().iter().any(|s| s.index >= from));
         let continue_session = active.session_from.is_some();
         if has_session_footage {
             self.finish_session(active, false);
@@ -265,7 +277,13 @@ impl Supervisor {
     fn reload(&mut self, cfg: Config) {
         let restart = cfg.capture_changed(&self.cfg);
         let session_turned_on = cfg.record_full_session && !self.cfg.record_full_session;
-        let storage_changed = cfg.storage_limit_gb != self.cfg.storage_limit_gb || cfg.output_dir != self.cfg.output_dir;
+        let policy = StoragePolicy::of(&cfg);
+        let storage_changed = {
+            let mut current = self.storage.lock().unwrap_or_else(|e| e.into_inner());
+            let changed = *current != policy;
+            *current = policy;
+            changed
+        };
         self.cfg = cfg;
         self.matchers = matchers(&self.cfg);
         // Rescan now rather than in up to 2 s: a game may have just been enabled.
@@ -334,30 +352,21 @@ impl Supervisor {
         let Some(from) = active.session_from.take() else { return };
         active.session_since = None;
         let _ = std::fs::remove_file(active.dir.join(SESSION_FILE));
-        let segs: Vec<Segment> = ring::scan(&active.dir)
-            .unwrap_or_default()
-            .into_iter()
-            .filter(|s| s.index >= from)
-            .collect();
-        let out = clip::output_path(&self.cfg.output_dir, &active.window.profile.name, ExportKind::Session, Local::now());
+        let segs: Vec<Segment> =
+            ring::scan(&active.dir).unwrap_or_default().into_iter().filter(|s| s.index >= from).collect();
+        let out =
+            clip::output_path(&self.cfg.output_dir, &active.window.profile.name, ExportKind::Session, Local::now());
         let cleanup = cleanup.then(|| active.dir.clone());
         self.spawn_export(ExportSource::Segments(segs), out, active.audio_titles.clone(), ExportKind::Session, cleanup);
     }
 
-    fn storage_policy(&self) -> StoragePolicy {
-        StoragePolicy { output_dir: self.cfg.output_dir.clone(), limit: self.cfg.storage_limit_bytes() }
-    }
-
-    /// Applies the storage limit now, unless a save is in progress (that
-    /// save will apply it when it finishes).
+    /// Applies the storage limit now, unless a save is in progress: that
+    /// save applies it when it finishes, reading the *current* policy then.
     fn enforce_storage_soon(&self) {
         if self.exports_in_flight.load(Ordering::SeqCst) > 0 {
             return;
         }
-        let storage = self.storage_policy();
-        if storage.limit.is_none() {
-            return;
-        }
+        let storage = self.storage.clone();
         let sink = self.sink.clone();
         std::thread::spawn(move || enforce_storage_limit(&storage, &sink));
     }
@@ -373,7 +382,7 @@ impl Supervisor {
         let ffmpeg = self.ffmpeg.clone();
         let in_flight = self.exports_in_flight.clone();
         let sink = self.sink.clone();
-        let storage = self.storage_policy();
+        let storage = self.storage.clone();
         // Counted from now so pruning pauses while we wait for the segment.
         in_flight.fetch_add(1, Ordering::SeqCst);
         std::thread::spawn(move || {
@@ -410,9 +419,8 @@ impl Supervisor {
                 tracing::warn!("{} is in use by another playerstv process, leaving it alone", dir.display());
                 continue;
             }
-            let session = std::fs::read_to_string(dir.join(SESSION_FILE))
-                .ok()
-                .and_then(|s| s.trim().parse::<u64>().ok());
+            let session =
+                std::fs::read_to_string(dir.join(SESSION_FILE)).ok().and_then(|s| s.trim().parse::<u64>().ok());
             let Some(from) = session else {
                 let _ = std::fs::remove_dir_all(&dir);
                 continue;
@@ -420,8 +428,10 @@ impl Supervisor {
             let meta = std::fs::read_to_string(dir.join(META_FILE)).unwrap_or_default();
             let mut lines = meta.lines();
             let game = lines.next().unwrap_or("Game").to_owned();
-            let titles: Vec<String> = lines.next().unwrap_or("").split(',').filter(|s| !s.is_empty()).map(String::from).collect();
-            let segs: Vec<Segment> = ring::scan(&dir).unwrap_or_default().into_iter().filter(|s| s.index >= from).collect();
+            let titles: Vec<String> =
+                lines.next().unwrap_or("").split(',').filter(|s| !s.is_empty()).map(String::from).collect();
+            let segs: Vec<Segment> =
+                ring::scan(&dir).unwrap_or_default().into_iter().filter(|s| s.index >= from).collect();
             tracing::info!("recovering unsaved {game} session from {}", dir.display());
             let out = clip::output_path(&self.cfg.output_dir, &game, ExportKind::Session, Local::now());
             self.spawn_export(ExportSource::Segments(segs), out, titles, ExportKind::Session, Some(dir));
@@ -470,7 +480,12 @@ enum ExportSource {
     /// wait for ffmpeg to close it: otherwise the last moments (the bit the
     /// player actually wanted) would still be in ffmpeg's buffers. Segments
     /// before `first` belong to an earlier encoder and are left out.
-    ClipUpTo { dir: PathBuf, first: u64, last: u64, seconds: u32 },
+    ClipUpTo {
+        dir: PathBuf,
+        first: u64,
+        last: u64,
+        seconds: u32,
+    },
 }
 
 impl ExportSource {
@@ -530,11 +545,7 @@ fn start_recorder(ffmpeg: &Path, cfg: &Config, active: &mut Active) {
 fn begin_session(active: &mut Active) {
     // Include the segment being written right now, but nothing from an
     // earlier encoder (a just-restarted one may not have written a file yet).
-    let from = ring::scan(&active.dir)
-        .ok()
-        .and_then(|s| s.last().map(|s| s.index))
-        .unwrap_or(0)
-        .max(active.epoch_from);
+    let from = ring::scan(&active.dir).ok().and_then(|s| s.last().map(|s| s.index)).unwrap_or(0).max(active.epoch_from);
     tracing::info!("full-session recording started at segment {from}");
     let _ = std::fs::write(active.dir.join(SESSION_FILE), from.to_string());
     active.session_from = Some(from);
@@ -542,17 +553,29 @@ fn begin_session(active: &mut Active) {
 }
 
 /// Where recordings are saved and how big they may get in total.
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct StoragePolicy {
     output_dir: PathBuf,
     limit: Option<u64>,
 }
 
+impl StoragePolicy {
+    fn of(cfg: &Config) -> Self {
+        Self { output_dir: cfg.output_dir.clone(), limit: cfg.storage_limit_bytes() }
+    }
+}
+
+/// The live policy, shared with export threads so one that finishes after
+/// a settings change enforces the new limit/folder, not the old one.
+type SharedStoragePolicy = Arc<std::sync::Mutex<StoragePolicy>>;
+
 /// Deletes the oldest saved recordings until they fit under the limit.
-fn enforce_storage_limit(policy: &StoragePolicy, sink: &EventSink) {
+fn enforce_storage_limit(policy: &SharedStoragePolicy, sink: &EventSink) {
     // Saves finishing together could both get here; one pass at a time.
     static RUNNING: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    let Some(limit) = policy.limit else { return };
     let _guard = RUNNING.lock().unwrap_or_else(|e| e.into_inner());
+    let policy = policy.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let Some(limit) = policy.limit else { return };
 
     let recs = storage::scan(&policy.output_dir);
     let plan = storage::plan_cleanup(&recs, limit);
@@ -612,4 +635,61 @@ fn delete_when_idle(dir: PathBuf, in_flight: Arc<AtomicUsize>) {
             }
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_dir(tag: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("ptv-sup-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    #[test]
+    fn live_buffers_are_locked_abandoned_ones_are_not() {
+        let dir = temp_dir("lock");
+        assert!(!buffer_in_use(&dir), "no lock file: a pre-lock leftover");
+        let lock = lock_buffer(&dir).unwrap();
+        assert!(buffer_in_use(&dir), "held by a running process");
+        drop(lock);
+        assert!(!buffer_in_use(&dir), "process gone: lock file left behind but free");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn storage_limit_uses_the_policy_current_when_it_runs() {
+        let out = temp_dir("storage");
+        let game = out.join("RuneLite");
+        std::fs::create_dir_all(&game).unwrap();
+        for (i, day) in ["01", "02", "03"].iter().enumerate() {
+            let p = game.join(format!("RuneLite_2026-10-{day}_10-00-00.mp4"));
+            std::fs::write(&p, [0u8; 10]).unwrap();
+            // Distinct, increasing modification times.
+            let t = std::time::SystemTime::UNIX_EPOCH + Duration::from_secs(1_000 + i as u64);
+            std::fs::File::options().write(true).open(&p).unwrap().set_modified(t).unwrap();
+        }
+        let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink: EventSink = {
+            let events = events.clone();
+            Arc::new(move |e| events.lock().unwrap().push(e))
+        };
+
+        // An export captured the policy while there was no limit…
+        let shared: SharedStoragePolicy =
+            Arc::new(std::sync::Mutex::new(StoragePolicy { output_dir: out.clone(), limit: None }));
+        let captured_by_export = shared.clone();
+        // …then the user set a limit (20 bytes) before it finished.
+        *shared.lock().unwrap() = StoragePolicy { output_dir: out.clone(), limit: Some(20) };
+        enforce_storage_limit(&captured_by_export, &sink);
+
+        let left: Vec<String> =
+            std::fs::read_dir(&game).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+        assert_eq!(left.len(), 2, "the oldest is deleted under the *new* limit: {left:?}");
+        assert!(!left.iter().any(|n| n.contains("10-01")));
+        assert!(matches!(events.lock().unwrap().as_slice(), [Event::Cleaned { count: 1, bytes: 10 }]));
+        std::fs::remove_dir_all(&out).unwrap();
+    }
 }

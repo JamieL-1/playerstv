@@ -2,11 +2,11 @@
 //! it plays) with what process loopback captures from it.
 //! usage: compare_meter <pid> [seconds]
 use std::time::{Duration, Instant};
+use wasapi::*;
 use windows::core::Interface;
 use windows::Win32::Media::Audio::Endpoints::IAudioMeterInformation;
 use windows::Win32::Media::Audio::{IAudioSessionControl2, IAudioSessionManager2};
 use windows::Win32::System::Com::CLSCTX_ALL;
-use wasapi::*;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _ = initialize_mta();
@@ -27,7 +27,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let fmt = WaveFormat::new(32, 32, &SampleType::Float, 48000, 2, None);
     let mut client = AudioClient::new_application_loopback_client(pid, true)?;
-    client.initialize_client(&fmt, &Direction::Capture, &StreamMode::EventsShared { autoconvert: true, buffer_duration_hns: 0 })?;
+    client.initialize_client(
+        &fmt,
+        &Direction::Capture,
+        &StreamMode::EventsShared { autoconvert: true, buffer_duration_hns: 0 },
+    )?;
     let ev = client.set_get_eventhandle()?;
     let cap = client.get_audiocaptureclient()?;
     client.start_stream()?;
@@ -40,15 +44,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     while t.elapsed() < Duration::from_secs(secs) {
         let _ = ev.wait_for_event(20);
         while let Some(f) = cap.get_next_packet_size()? {
-            if f == 0 { break; }
+            if f == 0 {
+                break;
+            }
             let (got, _) = cap.read_from_device(&mut buf)?;
-            for s in buf[..got as usize * 8].as_chunks::<4>().0 { sec_cap = sec_cap.max(f32::from_le_bytes(*s).abs()); }
+            for s in buf[..got as usize * 8].as_chunks::<4>().0 {
+                sec_cap = sec_cap.max(f32::from_le_bytes(*s).abs());
+            }
         }
-        for m in &meters { sec_meter = sec_meter.max(unsafe { m.GetPeakValue().unwrap_or(0.0) }); }
+        for m in &meters {
+            sec_meter = sec_meter.max(unsafe { m.GetPeakValue().unwrap_or(0.0) });
+        }
         if t.elapsed() >= next_report {
             println!("{:>3}s  meter {sec_meter:.3}  captured {sec_cap:.3}", next_report.as_secs());
-            meter_max = meter_max.max(sec_meter); cap_max = cap_max.max(sec_cap);
-            sec_meter = 0.0; sec_cap = 0.0;
+            meter_max = meter_max.max(sec_meter);
+            cap_max = cap_max.max(sec_cap);
+            sec_meter = 0.0;
+            sec_cap = 0.0;
             next_report += Duration::from_secs(1);
         }
     }

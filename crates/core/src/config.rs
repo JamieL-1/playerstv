@@ -135,6 +135,14 @@ impl Codec {
     pub fn supports_full_chroma(self) -> bool {
         !matches!(self, Codec::Av1)
     }
+
+    /// Largest frame width/height NVENC accepts for this codec.
+    pub fn max_dimension(self) -> u32 {
+        match self {
+            Codec::H264 => 4096,
+            Codec::Hevc | Codec::Av1 => 8192,
+        }
+    }
 }
 
 pub const FPS_CHOICES: [u32; 4] = [30, 60, 90, 120];
@@ -234,6 +242,11 @@ impl Default for AudioConfig {
 
 pub const MAX_VOLUME_PERCENT: u32 = 400;
 pub const MAX_STORAGE_LIMIT_GB: u32 = 20_000;
+// Shared with the settings UI so its sliders accept every value a config can
+// hold (a narrower slider would silently clamp the value just by drawing).
+pub const STORAGE_LIMIT_GB: std::ops::RangeInclusive<u32> = 1..=MAX_STORAGE_LIMIT_GB;
+pub const BITRATE_CAP_MBPS: std::ops::RangeInclusive<u32> = 2..=400;
+pub const AUDIO_BITRATE_KBPS: std::ops::RangeInclusive<u32> = 64..=320;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -288,10 +301,8 @@ impl Config {
             cfg.save(path)?;
             return Ok(cfg);
         }
-        let text = std::fs::read_to_string(path)
-            .with_context(|| format!("reading {}", path.display()))?;
-        let mut cfg: Config =
-            toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
+        let text = std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+        let mut cfg: Config = toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
         cfg.sanitize();
         Ok(cfg)
     }
@@ -310,16 +321,16 @@ impl Config {
 
     /// Clamp values a hand-edited config might get wrong.
     pub fn sanitize(&mut self) {
-        self.buffer_seconds = self
-            .buffer_seconds
-            .clamp(MIN_BUFFER_SECONDS, MAX_BUFFER_SECONDS);
+        self.buffer_seconds = self.buffer_seconds.clamp(MIN_BUFFER_SECONDS, MAX_BUFFER_SECONDS);
         self.video.fps = self.video.fps.clamp(10, 120);
-        self.video.bitrate_cap_mbps = self.video.bitrate_cap_mbps.map(|m| m.clamp(2, 400));
-        self.audio.bitrate_kbps = self.audio.bitrate_kbps.clamp(64, 320);
+        self.video.bitrate_cap_mbps =
+            self.video.bitrate_cap_mbps.map(|m| m.clamp(*BITRATE_CAP_MBPS.start(), *BITRATE_CAP_MBPS.end()));
+        self.audio.bitrate_kbps = self.audio.bitrate_kbps.clamp(*AUDIO_BITRATE_KBPS.start(), *AUDIO_BITRATE_KBPS.end());
         self.audio.game_volume = self.audio.game_volume.min(MAX_VOLUME_PERCENT);
         self.audio.mic_volume = self.audio.mic_volume.min(MAX_VOLUME_PERCENT);
         profile::merge_builtins(&mut self.games);
-        self.storage_limit_gb = self.storage_limit_gb.map(|g| g.clamp(1, MAX_STORAGE_LIMIT_GB));
+        self.storage_limit_gb =
+            self.storage_limit_gb.map(|g| g.clamp(*STORAGE_LIMIT_GB.start(), *STORAGE_LIMIT_GB.end()));
     }
 
     pub fn storage_limit_bytes(&self) -> Option<u64> {
@@ -427,10 +438,7 @@ mod tests {
 
     #[test]
     fn sanitize_clamps() {
-        let mut cfg = Config {
-            buffer_seconds: 1,
-            ..Default::default()
-        };
+        let mut cfg = Config { buffer_seconds: 1, ..Default::default() };
         cfg.video.fps = 500;
         cfg.games.clear();
         cfg.sanitize();

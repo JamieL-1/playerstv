@@ -26,9 +26,8 @@ pub fn bind_to_our_lifetime(child: &Child) {
     use std::sync::OnceLock;
     use windows::Win32::Foundation::HANDLE;
     use windows::Win32::System::JobObjects::{
-        AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
-        SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
-        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+        AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation, SetInformationJobObject,
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
     };
 
     // HANDLE isn't Send/Sync; store the raw value. Never closed on purpose.
@@ -93,7 +92,11 @@ impl Recorder {
         }
         if a.mic {
             let f = PipeFeeder::start(AudioSource::Mic { device: a.mic_device.clone() }, audio::pipe_name("mic"))?;
-            inputs.push(AudioInput { pipe_path: f.pipe_path().to_owned(), title: "Mic".into(), mix_volume: a.mic_volume });
+            inputs.push(AudioInput {
+                pipe_path: f.pipe_path().to_owned(),
+                title: "Mic".into(),
+                mix_volume: a.mic_volume,
+            });
             feeders.push(f);
         }
 

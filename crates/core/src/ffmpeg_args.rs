@@ -76,18 +76,34 @@ fn mix_graph(audio: &[AudioInput]) -> String {
 /// tell gfxcapture to round the native size down to a multiple of 2.
 pub fn output_size(target: CaptureTarget, video: &VideoConfig) -> (i64, i64) {
     let known = target.width > 0 && target.height > 0;
+    let max = video.codec.max_dimension();
+    let fits = |w: u32, h: u32| w <= max && h <= max;
+    let native_even = (target.width / 2 * 2, target.height / 2 * 2);
     match (video.resolution, video.resolution.height()) {
-        (Resolution::Double, _) if known => (
-            (target.width / 2 * 4) as i64,
-            (target.height / 2 * 4) as i64,
-        ),
-        (_, None) => (-2, -2),
+        // 2× only makes sense as an exact integer scale; if the encoder
+        // can't take it, record native instead.
+        (Resolution::Double, _) if known && fits(native_even.0 * 2, native_even.1 * 2) => {
+            ((native_even.0 * 2) as i64, (native_even.1 * 2) as i64)
+        }
+        (_, None) if !known || fits(native_even.0, native_even.1) => (-2, -2),
+        // Native window bigger than the encoder allows (e.g. 5120×1440 with H.264).
+        (_, None) => fit_within(native_even.0 as f64 / native_even.1 as f64, native_even.1, max),
         (_, Some(h)) => {
             let aspect = if known { target.width as f64 / target.height as f64 } else { 16.0 / 9.0 };
-            let w = ((h as f64 * aspect) / 2.0).round() as i64 * 2;
-            (w.max(2), h as i64)
+            fit_within(aspect, h, max)
         }
     }
+}
+
+/// The largest even size with this aspect ratio, `height` tall at most,
+/// with neither side over `max`.
+fn fit_within(aspect: f64, height: u32, max: u32) -> (i64, i64) {
+    let mut h = height.min(max) as f64;
+    if h * aspect > max as f64 {
+        h = max as f64 / aspect;
+    }
+    let even = |x: f64| ((x / 2.0).floor() as i64 * 2).max(2);
+    (even(h * aspect).min(max as i64), even(h))
 }
 
 /// The frame size that will actually be encoded (native resolves to the
@@ -150,15 +166,10 @@ pub fn describe(plan: &EncodePlan, v: &VideoConfig) -> String {
         Codec::Av1 => "AV1",
     };
     let chroma = if plan.full_chroma { " 4:4:4" } else { "" };
-    format!(
-        "{}×{} · {} fps · {codec}{chroma} · {} quality",
-        plan.width,
-        plan.height,
-        v.fps,
-        v.quality.short_name()
-    )
+    format!("{}×{} · {} fps · {codec}{chroma} · {} quality", plan.width, plan.height, v.fps, v.quality.short_name())
 }
 
+#[rustfmt::skip] // keep each ffmpeg flag next to its value
 pub fn record_args(spec: &RecordSpec) -> Vec<String> {
     let v = spec.video;
     let (w, h) = output_size(spec.target, v);
@@ -304,7 +315,9 @@ mod tests {
         };
         let args = record_args(&spec);
         let s = args.join(" ");
-        assert!(s.contains("gfxcapture=hwnd=4660:max_framerate=120:resize_mode=scale_aspect:scale_mode=bicubic:width=-2:height=-2"));
+        assert!(s.contains(
+            "gfxcapture=hwnd=4660:max_framerate=120:resize_mode=scale_aspect:scale_mode=bicubic:width=-2:height=-2"
+        ));
         assert!(s.contains(
             "[v];[0:a]volume=1.50[m0];[1:a]volume=0.80[m1];[m0][m1]amix=inputs=2:normalize=0:dropout_transition=0,alimiter=limit=0.97:level=false[mix]"
         ));
@@ -341,6 +354,28 @@ mod tests {
         })
         .join(" ");
         assert!(s.contains("scale_mode=point:width=3800:height=2060"));
+    }
+
+    #[test]
+    fn sizes_never_exceed_encoder_limits() {
+        let qhd = CaptureTarget { width: 2560, height: 1440, ..target() };
+        // 2× of 1440p is 5120×2880: too big for H.264 (4096) → native.
+        let v = VideoConfig { resolution: Resolution::Double, ..Default::default() };
+        assert_eq!(output_size(qhd, &v), (-2, -2));
+        assert_eq!(encoded_size(qhd, &v), (2560, 1440));
+        // HEVC goes up to 8192, so 2× is fine there.
+        let v = VideoConfig { codec: Codec::Hevc, ..v };
+        assert_eq!(output_size(qhd, &v), (5120, 2880));
+        // 4K on a 21:9 window would be 5040 wide: scaled to fit H.264.
+        let ultrawide = CaptureTarget { width: 3440, height: 1440, ..target() };
+        let v = VideoConfig { resolution: Resolution::P2160, ..Default::default() };
+        let (w, h) = output_size(ultrawide, &v);
+        assert!(w <= 4096 && h <= 4096 && w % 2 == 0 && h % 2 == 0, "{w}x{h}");
+        assert_eq!(w, 4096);
+        // A native window wider than 4096 is scaled down instead of failing.
+        let super_wide = CaptureTarget { width: 5120, height: 1440, ..target() };
+        let (w, h) = output_size(super_wide, &VideoConfig::default());
+        assert_eq!((w, h), (4096, 1152));
     }
 
     #[test]

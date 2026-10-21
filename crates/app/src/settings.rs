@@ -14,14 +14,13 @@ use anyhow::{anyhow, Result};
 use eframe::egui;
 use global_hotkey::hotkey::HotKey;
 use ptv_core::config::{
-    AudioSourceKind, Codec, Config, Quality, Resolution, FPS_CHOICES, MAX_BUFFER_SECONDS, MAX_VOLUME_PERCENT,
-    MIN_BUFFER_SECONDS,
+    AudioSourceKind, Codec, Config, Quality, Resolution, AUDIO_BITRATE_KBPS, BITRATE_CAP_MBPS, FPS_CHOICES,
+    MAX_BUFFER_SECONDS, MAX_VOLUME_PERCENT, MIN_BUFFER_SECONDS, STORAGE_LIMIT_GB,
 };
 use ptv_core::profile::{self, GameProfile};
-use windows::core::w;
-use windows::Win32::Foundation::{GetLastError, ERROR_ALREADY_EXISTS};
+use windows::Win32::Foundation::{GetLastError, ERROR_ALREADY_EXISTS, HWND};
 use windows::Win32::System::Threading::CreateMutexW;
-use windows::Win32::UI::WindowsAndMessaging::{FindWindowW, SetForegroundWindow, ShowWindow, SW_RESTORE};
+use windows::Win32::UI::WindowsAndMessaging::{SetForegroundWindow, ShowWindow, SW_RESTORE};
 
 use crate::control::{self, Request, Snapshot};
 use crate::paths;
@@ -36,7 +35,12 @@ pub fn run() -> Result<()> {
         let _mutex = CreateMutexW(None, false, &paths::mutex_name("settings"))?;
         if GetLastError() == ERROR_ALREADY_EXISTS {
             // Already open: bring it to the front instead.
-            if let Ok(hwnd) = FindWindowW(None, w!("playerstv")) {
+            // Match our own exe as well as the title: an Explorer window on
+            // the default clips folder is also titled "playerstv".
+            let exe = std::env::current_exe().ok();
+            let exe = exe.as_deref().and_then(|p| p.file_name()).and_then(|n| n.to_str()).unwrap_or("playerstv.exe");
+            if let Some(hwnd) = ptv_capture::detect::find_window(WINDOW_TITLE, exe) {
+                let hwnd = HWND(hwnd as *mut _);
                 let _ = ShowWindow(hwnd, SW_RESTORE);
                 let _ = SetForegroundWindow(hwnd);
             }
@@ -59,7 +63,8 @@ pub fn run() -> Result<()> {
         options,
         Box::new(move |cc| {
             let remote = Remote::start(cc.egui_ctx.clone());
-            Ok(Box::new(SettingsApp::new(cfg, mics, remote)))
+            let usage = UsageWatcher::start(cc.egui_ctx.clone(), cfg.output_dir.clone());
+            Ok(Box::new(SettingsApp::new(cfg, mics, remote, usage)))
         }),
     )
     .map_err(|e| anyhow!("window: {e}"))
@@ -113,14 +118,14 @@ struct SettingsApp {
     message: Option<(String, bool)>,
     /// Last-seen modification time of config.toml, to notice outside edits.
     config_mtime: Option<std::time::SystemTime>,
-    usage: Option<Usage>,
+    usage: UsageWatcher,
     remote: Remote,
 }
 
 impl SettingsApp {
-    fn new(cfg: Config, mics: Vec<String>, remote: Remote) -> Self {
+    fn new(cfg: Config, mics: Vec<String>, remote: Remote, usage: UsageWatcher) -> Self {
         let exe_text = cfg.games.iter().map(|g| g.exe_names.join(", ")).collect();
-        Self { saved: cfg.clone(), cfg, mics, exe_text, message: None, remote, config_mtime: config_mtime(), usage: None }
+        Self { saved: cfg.clone(), cfg, mics, exe_text, message: None, remote, config_mtime: config_mtime(), usage }
     }
 
     fn revert(&mut self) {
@@ -184,7 +189,8 @@ impl eframe::App for SettingsApp {
                     self.revert();
                 }
                 if let Some((msg, ok)) = &self.message {
-                    let color = if *ok { egui::Color32::from_rgb(60, 170, 90) } else { egui::Color32::from_rgb(220, 70, 60) };
+                    let color =
+                        if *ok { egui::Color32::from_rgb(60, 170, 90) } else { egui::Color32::from_rgb(220, 70, 60) };
                     ui.colored_label(color, msg);
                 }
             });
@@ -236,11 +242,14 @@ impl SettingsApp {
         let buffer = snap.buffer_seconds;
         let (color, pulse, title, detail) = match &snap.status {
             Status::Waiting => {
-                let enabled: Vec<&str> = self.saved.games.iter().filter(|g| g.enabled).map(|g| g.name.as_str()).collect();
+                let enabled: Vec<&str> =
+                    self.saved.games.iter().filter(|g| g.enabled).map(|g| g.name.as_str()).collect();
                 let detail = match enabled.as_slice() {
                     [] => "Every game is switched off below — nothing will be recorded.".to_owned(),
                     [one] => format!("Recording starts automatically when {one} opens."),
-                    [rest @ .., last] => format!("Recording starts automatically when {} or {last} opens.", rest.join(", ")),
+                    [rest @ .., last] => {
+                        format!("Recording starts automatically when {} or {last} opens.", rest.join(", "))
+                    }
                 };
                 (GREY, false, "Not recording — waiting for a game".to_owned(), detail)
             }
@@ -298,7 +307,8 @@ impl SettingsApp {
             }
             let session = match snap.status.session_since() {
                 Some(_) => egui::Button::new(
-                    egui::RichText::new(format!("Stop & save session  ({})", snap.session_hotkey)).color(egui::Color32::WHITE),
+                    egui::RichText::new(format!("Stop & save session  ({})", snap.session_hotkey))
+                        .color(egui::Color32::WHITE),
                 )
                 .fill(RED),
                 None => egui::Button::new(format!("Record full session  ({})", snap.session_hotkey)),
@@ -328,7 +338,9 @@ impl SettingsApp {
         ui.heading("Replay buffer");
         egui::Grid::new("general").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
             ui.label("Clip length");
-            ui.add(egui::Slider::new(&mut self.cfg.buffer_seconds, MIN_BUFFER_SECONDS..=MAX_BUFFER_SECONDS).suffix(" s"));
+            ui.add(
+                egui::Slider::new(&mut self.cfg.buffer_seconds, MIN_BUFFER_SECONDS..=MAX_BUFFER_SECONDS).suffix(" s"),
+            );
             ui.end_row();
 
             ui.label("Save clip hotkey");
@@ -368,7 +380,7 @@ impl SettingsApp {
         }
         if let Some(gb) = &mut self.cfg.storage_limit_gb {
             ui.indent("storage", |ui| {
-                ui.add(egui::Slider::new(gb, 1..=2000).suffix(" GB").logarithmic(true).text("maximum"));
+                ui.add(egui::Slider::new(gb, STORAGE_LIMIT_GB).suffix(" GB").logarithmic(true).text("maximum"));
                 ui.label(
                     egui::RichText::new(
                         "When saved clips and sessions go over this, the oldest are permanently deleted. \
@@ -380,17 +392,13 @@ impl SettingsApp {
             });
         }
 
-        // Current usage, re-measured every few seconds.
-        if self.usage.as_ref().is_none_or(|u| u.measured.elapsed() > Duration::from_secs(3) || u.dir != self.cfg.output_dir) {
-            let recs = ptv_core::storage::scan(&self.cfg.output_dir);
-            self.usage = Some(Usage {
-                dir: self.cfg.output_dir.clone(),
-                bytes: ptv_core::storage::total_size(&recs),
-                files: recs.len(),
-                measured: std::time::Instant::now(),
-            });
+        // Measured in the background (see UsageWatcher).
+        self.usage.watch(&self.cfg.output_dir);
+        let usage = self.usage.get();
+        if usage.is_none() {
+            ui.label(egui::RichText::new("Measuring…").weak());
         }
-        if let Some(u) = &self.usage {
+        if let Some(u) = &usage {
             let used = ptv_core::storage::format_size(u.bytes);
             let files = match u.files {
                 1 => "1 recording".to_owned(),
@@ -444,9 +452,8 @@ impl SettingsApp {
 
             ui.label("Quality");
             let mut level = v.quality as usize;
-            let slider = egui::Slider::new(&mut level, 0..=Quality::ALL.len() - 1)
-                .show_value(false)
-                .text(v.quality.label());
+            let slider =
+                egui::Slider::new(&mut level, 0..=Quality::ALL.len() - 1).show_value(false).text(v.quality.label());
             if ui.add(slider).changed() {
                 v.quality = Quality::ALL[level];
             }
@@ -459,7 +466,7 @@ impl SettingsApp {
                     v.bitrate_cap_mbps = if auto { None } else { Some(40) };
                 }
                 if let Some(cap) = &mut v.bitrate_cap_mbps {
-                    ui.add(egui::Slider::new(cap, 4..=300).suffix(" Mbps").logarithmic(true));
+                    ui.add(egui::Slider::new(cap, BITRATE_CAP_MBPS).suffix(" Mbps").logarithmic(true));
                 }
             });
             ui.end_row();
@@ -545,7 +552,7 @@ impl SettingsApp {
             (false, false, _) => "No audio".to_owned(),
         };
         ui.label(egui::RichText::new(tracks).weak());
-        ui.add(egui::Slider::new(&mut a.bitrate_kbps, 96..=320).text("AAC bitrate (kbps)"));
+        ui.add(egui::Slider::new(&mut a.bitrate_kbps, AUDIO_BITRATE_KBPS).text("AAC bitrate (kbps)"));
     }
 
     fn games(&mut self, ui: &mut egui::Ui) {
@@ -567,58 +574,56 @@ impl SettingsApp {
 
         ui.add_space(6.0);
         let customs = self.cfg.games.iter().filter(|g| !g.is_builtin()).count();
-        egui::CollapsingHeader::new(format!("Custom games ({customs})"))
-            .default_open(customs > 0)
-            .show(ui, |ui| {
-                ui.label(
-                    egui::RichText::new(
-                        "Detected when the window title matches the regex and belongs to one of the \
+        egui::CollapsingHeader::new(format!("Custom games ({customs})")).default_open(customs > 0).show(ui, |ui| {
+            ui.label(
+                egui::RichText::new(
+                    "Detected when the window title matches the regex and belongs to one of the \
                          executables. Click Save to apply changes here.",
-                    )
-                    .small()
-                    .weak(),
-                );
-                let mut remove = None;
-                for (i, (game, exe)) in self.cfg.games.iter_mut().zip(self.exe_text.iter_mut()).enumerate() {
-                    if game.is_builtin() {
-                        continue;
-                    }
-                    egui::Frame::group(ui.style()).show(ui, |ui| {
-                        ui.horizontal(|ui| {
-                            if ui.checkbox(&mut game.enabled, "").changed() {
-                                toggled = Some((game.id.clone(), game.enabled));
-                            }
-                            ui.text_edit_singleline(&mut game.name);
-                            if ui.small_button("Remove").clicked() {
-                                remove = Some(i);
-                            }
-                        });
-                        egui::Grid::new(("game", i)).num_columns(2).show(ui, |ui| {
-                            ui.label("Executables");
-                            ui.text_edit_singleline(exe);
-                            ui.end_row();
-                            ui.label("Title regex");
-                            ui.text_edit_singleline(&mut game.window_title_regex);
-                            ui.end_row();
-                        });
+                )
+                .small()
+                .weak(),
+            );
+            let mut remove = None;
+            for (i, (game, exe)) in self.cfg.games.iter_mut().zip(self.exe_text.iter_mut()).enumerate() {
+                if game.is_builtin() {
+                    continue;
+                }
+                egui::Frame::group(ui.style()).show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        if ui.checkbox(&mut game.enabled, "").changed() {
+                            toggled = Some((game.id.clone(), game.enabled));
+                        }
+                        ui.text_edit_singleline(&mut game.name);
+                        if ui.small_button("Remove").clicked() {
+                            remove = Some(i);
+                        }
                     });
-                }
-                if let Some(i) = remove {
-                    self.cfg.games.remove(i);
-                    self.exe_text.remove(i);
-                }
-                if ui.button("Add custom game").clicked() {
-                    let used: Vec<String> = self.cfg.games.iter().map(|g| g.id.clone()).collect();
-                    self.cfg.games.push(GameProfile {
-                        id: profile::unique_custom_id("New game", &used),
-                        name: "New game".into(),
-                        exe_names: vec![],
-                        window_title_regex: ".*".into(),
-                        enabled: true,
+                    egui::Grid::new(("game", i)).num_columns(2).show(ui, |ui| {
+                        ui.label("Executables");
+                        ui.text_edit_singleline(exe);
+                        ui.end_row();
+                        ui.label("Title regex");
+                        ui.text_edit_singleline(&mut game.window_title_regex);
+                        ui.end_row();
                     });
-                    self.exe_text.push(String::new());
-                }
-            });
+                });
+            }
+            if let Some(i) = remove {
+                self.cfg.games.remove(i);
+                self.exe_text.remove(i);
+            }
+            if ui.button("Add custom game").clicked() {
+                let used: Vec<String> = self.cfg.games.iter().map(|g| g.id.clone()).collect();
+                self.cfg.games.push(GameProfile {
+                    id: profile::unique_custom_id("New game", &used),
+                    name: "New game".into(),
+                    exe_names: vec![],
+                    window_title_regex: ".*".into(),
+                    enabled: true,
+                });
+                self.exe_text.push(String::new());
+            }
+        });
 
         if let Some((id, enabled)) = toggled {
             self.apply_game_toggle(&id, enabled);
@@ -685,9 +690,65 @@ fn status_dot(ui: &mut egui::Ui, color: egui::Color32, pulse: bool) {
 }
 
 /// Space used by saved recordings, as last measured.
+#[derive(Clone)]
 struct Usage {
     dir: std::path::PathBuf,
     bytes: u64,
     files: usize,
-    measured: std::time::Instant,
+}
+
+/// Measures [`Usage`] on a background thread: scanning a big (or network)
+/// output folder must never stall the UI, including while the user types a
+/// new folder path.
+#[derive(Clone)]
+struct UsageWatcher {
+    wanted: Arc<Mutex<std::path::PathBuf>>,
+    latest: Arc<Mutex<Option<Usage>>>,
+}
+
+impl UsageWatcher {
+    const RESCAN: Duration = Duration::from_secs(3);
+    /// Wait this long after the folder last changed before scanning it, so
+    /// typing a path scans once, not per keystroke.
+    const SETTLE: Duration = Duration::from_millis(400);
+
+    fn start(ctx: egui::Context, dir: std::path::PathBuf) -> Self {
+        let w = Self { wanted: Arc::new(Mutex::new(dir)), latest: Arc::new(Mutex::new(None)) };
+        let worker = w.clone();
+        std::thread::spawn(move || {
+            let mut last_scan: Option<(std::path::PathBuf, std::time::Instant)> = None;
+            let mut seen = (worker.wanted.lock().unwrap().clone(), std::time::Instant::now());
+            loop {
+                let dir = worker.wanted.lock().unwrap().clone();
+                if dir != seen.0 {
+                    seen = (dir.clone(), std::time::Instant::now());
+                }
+                let settled = seen.1.elapsed() >= Self::SETTLE || last_scan.is_none();
+                let due = last_scan.as_ref().is_none_or(|(d, t)| *d != dir || t.elapsed() >= Self::RESCAN);
+                if settled && due {
+                    let recs = ptv_core::storage::scan(&dir);
+                    let usage =
+                        Usage { dir: dir.clone(), bytes: ptv_core::storage::total_size(&recs), files: recs.len() };
+                    *worker.latest.lock().unwrap() = Some(usage);
+                    last_scan = Some((dir, std::time::Instant::now()));
+                    ctx.request_repaint();
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+        });
+        w
+    }
+
+    fn watch(&self, dir: &std::path::Path) {
+        let mut wanted = self.wanted.lock().unwrap();
+        if *wanted != dir {
+            *wanted = dir.to_owned();
+        }
+    }
+
+    /// The latest measurement of the folder being watched, if any yet.
+    fn get(&self) -> Option<Usage> {
+        let wanted = self.wanted.lock().unwrap().clone();
+        self.latest.lock().unwrap().clone().filter(|u| u.dir == wanted)
+    }
 }

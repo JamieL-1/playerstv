@@ -3,17 +3,12 @@ use std::path::{Path, PathBuf};
 pub const APP_NAME: &str = "playerstv";
 
 fn env_dir(var: &str) -> PathBuf {
-    std::env::var_os(var)
-        .map(PathBuf::from)
-        .unwrap_or_else(std::env::temp_dir)
-        .join(APP_NAME)
+    std::env::var_os(var).map(PathBuf::from).unwrap_or_else(std::env::temp_dir).join(APP_NAME)
 }
 
 /// `%APPDATA%\playerstv\config.toml`, or `PLAYERSTV_CONFIG` if set.
 pub fn config_file() -> PathBuf {
-    std::env::var_os("PLAYERSTV_CONFIG")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| env_dir("APPDATA").join("config.toml"))
+    std::env::var_os("PLAYERSTV_CONFIG").map(PathBuf::from).unwrap_or_else(|| env_dir("APPDATA").join("config.toml"))
 }
 
 /// `PLAYERSTV_INSTANCE=name` runs a fully separate instance (its own

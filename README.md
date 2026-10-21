@@ -156,6 +156,22 @@ Design notes:
   different resolutions/codecs produces broken files.
 - ffmpeg runs inside a kill-on-close Job Object, so it can't outlive the app.
 
+## Development
+
+CI (`.github/workflows/ci.yml`) runs on every push to `main` and every pull
+request; run the same checks locally before pushing:
+
+```powershell
+cargo fmt --all --check
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo test --workspace --locked
+```
+
+It also runs `cargo audit` against the RustSec advisory database, and
+Dependabot opens weekly PRs for crate and Actions updates. Formatting uses
+`rustfmt.toml` (120 columns); `record_args` opts out so each ffmpeg flag
+stays next to its value.
+
 ## Diagnostics
 
 ```powershell

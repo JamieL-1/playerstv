@@ -94,6 +94,14 @@ jobs:
             dist/*.zip
             dist/*.sha256
 
+      # Publishing is ordered so main is never bumped without a release:
+      # 1. push only the tag (uploads the release commit, leaves main alone)
+      # 2. create the release as a draft
+      # 3. push the version bump to main
+      # 4. publish the draft
+      # If anything fails before 3, the cleanup step deletes the draft and tag,
+      # so re-running with the same bump just works.
+
       - name: Commit version bump
         if: inputs.bump != 'none' && !inputs.dry_run
         run: |
@@ -101,15 +109,22 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add Cargo.toml Cargo.lock
           git commit -m "Release ${{ steps.version.outputs.tag }}"
-          # Fails (and publishes nothing) if main moved on during the build.
-          git push origin HEAD:main
+          if ($LASTEXITCODE -ne 0) { throw "git commit failed" }
 
-      - name: Tag and publish release
+      - name: Tag and create draft release
+        id: draft
         if: ${{ !inputs.dry_run }}
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.version.outputs.tag }}
         run: |
+          # pwsh doesn't stop on failing native commands; check each one.
+          git tag $env:TAG
+          if ($LASTEXITCODE -ne 0) { throw "git tag failed" }
+          git push origin "refs/tags/$env:TAG"
+          if ($LASTEXITCODE -ne 0) { throw "pushing tag $env:TAG failed" }
+          "tag_pushed=true" >> $env:GITHUB_OUTPUT
+
           $zip = "dist/playerstv-$env:TAG-windows-x64.zip"
           $notes = @"
           ## Download
@@ -122,9 +137,45 @@ jobs:
 
           SHA-256: ``$((Get-Content "$zip.sha256").Split(' ')[0])``
           "@
-          # Creates the tag on the commit that was built (incl. the bump commit).
           gh release create $env:TAG $zip "$zip.sha256" `
-            --target (git rev-parse HEAD) `
+            --verify-tag `
+            --draft `
             --title "playerstv $env:TAG" `
             --notes $notes `
             --generate-notes
+          if ($LASTEXITCODE -ne 0) { throw "gh release create failed" }
+
+      - name: Push version bump to main
+        id: push_main
+        if: inputs.bump != 'none' && !inputs.dry_run
+        # Fails if main moved on during the build; cleanup then removes the
+        # draft and tag, and nothing was released.
+        run: git push origin HEAD:main
+
+      - name: Publish release
+        if: ${{ !inputs.dry_run }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release edit ${{ steps.version.outputs.tag }} --draft=false
+          if ($LASTEXITCODE -ne 0) { throw "gh release edit failed" }
+
+      - name: Clean up after a failed release
+        if: failure() && !inputs.dry_run && steps.draft.outputs.tag_pushed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          if ("${{ steps.push_main.outcome }}" -eq "success") {
+            # main already carries the bump: keep the draft so it can be
+            # published by hand instead of losing the version number.
+            Write-Host "::error::main was bumped to $env:TAG but publishing failed. Publish the draft release on GitHub (or: gh release edit $env:TAG --draft=false)."
+            exit 0
+          }
+          gh release view $env:TAG *> $null
+          if ($LASTEXITCODE -eq 0) {
+            gh release delete $env:TAG --yes --cleanup-tag
+          } else {
+            git push origin --delete "refs/tags/$env:TAG"
+          }
+          Write-Host "Removed draft/tag $env:TAG; main is unchanged, so re-running with the same bump is safe."

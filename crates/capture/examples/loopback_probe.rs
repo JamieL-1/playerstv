@@ -17,14 +17,28 @@ fn probe(label: &str, mut client: AudioClient, fmt: &WaveFormat) -> Result<(), B
     while t.elapsed() < Duration::from_secs(2) {
         let _ = ev.wait_for_event(100);
         while let Some(f) = cap.get_next_packet_size()? {
-            if f == 0 { break; }
+            if f == 0 {
+                break;
+            }
             let (got, info) = cap.read_from_device(&mut buf)?;
-            if info.flags.silent { silent += 1; }
+            if info.flags.silent {
+                silent += 1;
+            }
             let bytes = &buf[..got as usize * fmt.get_blockalign() as usize];
             if bits == 32 {
-                for s in bytes.as_chunks::<4>().0 { let v = f32::from_le_bytes(*s) as f64; peak = peak.max(v.abs()); sum += v*v; n += 1; }
+                for s in bytes.as_chunks::<4>().0 {
+                    let v = f32::from_le_bytes(*s) as f64;
+                    peak = peak.max(v.abs());
+                    sum += v * v;
+                    n += 1;
+                }
             } else {
-                for s in bytes.as_chunks::<2>().0 { let v = i16::from_le_bytes(*s) as f64 / 32768.0; peak = peak.max(v.abs()); sum += v*v; n += 1; }
+                for s in bytes.as_chunks::<2>().0 {
+                    let v = i16::from_le_bytes(*s) as f64 / 32768.0;
+                    peak = peak.max(v.abs());
+                    sum += v * v;
+                    n += 1;
+                }
             }
         }
     }

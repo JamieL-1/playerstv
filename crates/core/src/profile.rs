@@ -89,12 +89,7 @@ impl GameProfile {
     }
 
     pub fn matcher(&self) -> Option<ProfileMatcher> {
-        Regex::new(&self.window_title_regex)
-            .ok()
-            .map(|title| ProfileMatcher {
-                profile: self.clone(),
-                title,
-            })
+        Regex::new(&self.window_title_regex).ok().map(|title| ProfileMatcher { profile: self.clone(), title })
     }
 }
 
@@ -111,10 +106,12 @@ pub fn merge_builtins(games: &mut Vec<GameProfile>) {
     }
     // One entry per built-in, with current rules and the user's toggle.
     let mut seen = Vec::new();
-    games.retain(|g| !g.is_builtin() || {
-        let first = !seen.contains(&g.id);
-        seen.push(g.id.clone());
-        first
+    games.retain(|g| {
+        !g.is_builtin() || {
+            let first = !seen.contains(&g.id);
+            seen.push(g.id.clone());
+            first
+        }
     });
     for g in games.iter_mut().filter(|g| g.is_builtin()) {
         let enabled = g.enabled;
@@ -158,24 +155,27 @@ pub struct ProfileMatcher {
 }
 
 impl ProfileMatcher {
+    /// The cheap half of [`Self::matches`]: enabled and the title fits.
+    pub fn title_matches(&self, window_title: &str) -> bool {
+        self.profile.enabled && self.title.is_match(window_title)
+    }
+
     pub fn matches(&self, exe_name: &str, window_title: &str) -> bool {
         self.profile.enabled
-            && self
-                .profile
-                .exe_names
-                .iter()
-                .any(|e| e.eq_ignore_ascii_case(exe_name))
+            && self.profile.exe_names.iter().any(|e| e.eq_ignore_ascii_case(exe_name))
             && self.title.is_match(window_title)
     }
 }
 
 /// File-system-safe version of a profile name.
 pub fn safe_name(name: &str) -> String {
-    let s: String = name
-        .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
-        .collect();
-    if s.is_empty() { "Game".into() } else { s }
+    let s: String =
+        name.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' }).collect();
+    if s.is_empty() {
+        "Game".into()
+    } else {
+        s
+    }
 }
 
 #[cfg(test)]
@@ -221,7 +221,12 @@ mod tests {
         // A config from before ids existed: RuneLite (disabled, with an old
         // regex) plus a custom game.
         let mut games = vec![
-            GameProfile { id: String::new(), window_title_regex: "^old$".into(), enabled: false, ..GameProfile::runelite() },
+            GameProfile {
+                id: String::new(),
+                window_title_regex: "^old$".into(),
+                enabled: false,
+                ..GameProfile::runelite()
+            },
             GameProfile {
                 id: String::new(),
                 name: "Minecraft".into(),
@@ -242,8 +247,20 @@ mod tests {
     fn merge_is_idempotent_and_dedupes() {
         let mut games = builtins();
         games.push(GameProfile::cs2());
-        games.push(GameProfile { id: "custom-x".into(), name: "X".into(), exe_names: vec![], window_title_regex: ".*".into(), enabled: true });
-        games.push(GameProfile { id: "custom-x".into(), name: "X".into(), exe_names: vec![], window_title_regex: ".*".into(), enabled: true });
+        games.push(GameProfile {
+            id: "custom-x".into(),
+            name: "X".into(),
+            exe_names: vec![],
+            window_title_regex: ".*".into(),
+            enabled: true,
+        });
+        games.push(GameProfile {
+            id: "custom-x".into(),
+            name: "X".into(),
+            exe_names: vec![],
+            window_title_regex: ".*".into(),
+            enabled: true,
+        });
         merge_builtins(&mut games);
         let once = games.clone();
         merge_builtins(&mut games);

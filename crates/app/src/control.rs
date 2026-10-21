@@ -16,13 +16,39 @@ use serde::{Deserialize, Serialize};
 use windows::Win32::Foundation::{ERROR_PIPE_CONNECTED, HANDLE};
 use windows::Win32::Storage::FileSystem::{FlushFileBuffers, PIPE_ACCESS_DUPLEX};
 use windows::Win32::System::Pipes::{
-    ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, PIPE_READMODE_BYTE,
-    PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE, PIPE_UNLIMITED_INSTANCES, PIPE_WAIT,
+    ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, PIPE_READMODE_BYTE, PIPE_REJECT_REMOTE_CLIENTS,
+    PIPE_TYPE_BYTE, PIPE_UNLIMITED_INSTANCES, PIPE_WAIT,
 };
 
 use crate::supervisor::Status;
 
 const ERROR_PIPE_BUSY: i32 = 231;
+const ERROR_FILE_NOT_FOUND: i32 = 2;
+
+fn is_transient(e: &std::io::Error) -> bool {
+    match e.raw_os_error() {
+        Some(ERROR_PIPE_BUSY) => true,
+        // "No such pipe" is only a gap if the tray is actually running;
+        // otherwise report it straight away.
+        Some(ERROR_FILE_NOT_FOUND) => tray_running(),
+        _ => false,
+    }
+}
+
+/// Whether the tray app holds its single-instance mutex.
+pub fn tray_running() -> bool {
+    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::System::Threading::{OpenMutexW, SYNCHRONIZATION_SYNCHRONIZE};
+    match unsafe { OpenMutexW(SYNCHRONIZATION_SYNCHRONIZE, false, &crate::paths::mutex_name("tray")) } {
+        Ok(h) => {
+            unsafe {
+                let _ = CloseHandle(h);
+            }
+            true
+        }
+        Err(_) => false,
+    }
+}
 
 /// Everything the window needs to draw its status card.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -52,22 +78,30 @@ impl Request {
     }
 
     fn parse(s: &str) -> Option<Self> {
-        [Request::Status, Request::SaveClip, Request::ToggleSession]
-            .into_iter()
-            .find(|r| r.as_str() == s)
+        [Request::Status, Request::SaveClip, Request::ToggleSession].into_iter().find(|r| r.as_str() == s)
     }
 }
 
-/// Runs the server on a background thread for the life of the process.
-pub fn serve(snapshot: Arc<Mutex<Snapshot>>, on_request: impl Fn(Request) + Send + 'static) {
-    let spawned = std::thread::Builder::new().name("control".into()).spawn(move || loop {
-        if let Err(e) = serve_one(&snapshot, &on_request) {
-            tracing::debug!("control connection: {e:#}");
-            std::thread::sleep(Duration::from_millis(200));
+/// Pipe instances kept listening. A single instance leaves a gap between
+/// one client disconnecting and the next instance being created, and a
+/// client arriving in that gap would see "no such pipe".
+const LISTENERS: usize = 4;
+
+/// Runs the server on background threads for the life of the process.
+pub fn serve(snapshot: Arc<Mutex<Snapshot>>, on_request: impl Fn(Request) + Send + Sync + 'static) {
+    let on_request = Arc::new(on_request);
+    for i in 0..LISTENERS {
+        let snapshot = snapshot.clone();
+        let on_request = on_request.clone();
+        let spawned = std::thread::Builder::new().name(format!("control-{i}")).spawn(move || loop {
+            if let Err(e) = serve_one(&snapshot, &*on_request) {
+                tracing::debug!("control connection: {e:#}");
+                std::thread::sleep(Duration::from_millis(200));
+            }
+        });
+        if let Err(e) = spawned {
+            tracing::error!("couldn't start control listener: {e}");
         }
-    });
-    if let Err(e) = spawned {
-        tracing::error!("couldn't start control server: {e}");
     }
 }
 
@@ -121,8 +155,9 @@ pub fn request(req: Request) -> Result<Snapshot> {
     let mut pipe = loop {
         match OpenOptions::new().read(true).write(true).open(crate::paths::control_pipe()) {
             Ok(f) => break f,
-            // All instances busy for a moment: retry briefly.
-            Err(e) if e.raw_os_error() == Some(ERROR_PIPE_BUSY) && attempts < 20 => {
+            // All listeners busy, or between instances while the tray is
+            // running: retry briefly rather than drop the user's click.
+            Err(e) if is_transient(&e) && attempts < 20 => {
                 attempts += 1;
                 std::thread::sleep(Duration::from_millis(25));
             }
@@ -133,4 +168,53 @@ pub fn request(req: Request) -> Result<Snapshot> {
     let mut line = String::new();
     BufReader::new(pipe).read_line(&mut line)?;
     serde_json::from_str(&line).context("bad reply from playerstv")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[test]
+    fn many_concurrent_clients_all_get_answers() {
+        // Own pipe/mutex names so this never talks to a real tray instance.
+        std::env::set_var("PLAYERSTV_INSTANCE", format!("unittest-{}", std::process::id()));
+        // Hold the tray mutex like the real tray does.
+        let _mutex = unsafe {
+            windows::Win32::System::Threading::CreateMutexW(None, false, &crate::paths::mutex_name("tray")).unwrap()
+        };
+        let snapshot = Arc::new(Mutex::new(Snapshot {
+            status: Status::Waiting,
+            buffer_seconds: 30,
+            clip_hotkey: "Alt+F10".into(),
+            session_hotkey: "Alt+F9".into(),
+            output_dir: PathBuf::from("out"),
+            last_saved: None,
+        }));
+        let clips = Arc::new(AtomicUsize::new(0));
+        {
+            let clips = clips.clone();
+            serve(snapshot, move |r| {
+                if r == Request::SaveClip {
+                    clips.fetch_add(1, Ordering::SeqCst);
+                }
+            });
+        }
+
+        // 8 threads x 25 requests, back to back: with a single listener the
+        // gaps between pipe instances made some of these fail.
+        let threads: Vec<_> = (0..8)
+            .map(|_| {
+                std::thread::spawn(|| {
+                    (0..25)
+                        .map(|i| request(if i % 5 == 0 { Request::SaveClip } else { Request::Status }))
+                        .filter(|r| r.is_err())
+                        .count()
+                })
+            })
+            .collect();
+        let failures: usize = threads.into_iter().map(|t| t.join().unwrap()).sum();
+        assert_eq!(failures, 0, "every request should get an answer");
+        assert_eq!(clips.load(Ordering::SeqCst), 8 * 5, "every SaveClip should arrive");
+    }
 }

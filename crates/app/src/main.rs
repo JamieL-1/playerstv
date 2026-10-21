@@ -108,13 +108,29 @@ fn smoke(secs: u64) -> Result<()> {
     }
 }
 
+const LOG_DAYS_KEPT: usize = 14;
+
 fn init_logging(to_stderr: bool) -> Option<tracing_appender::non_blocking::WorkerGuard> {
     let filter = EnvFilter::try_from_env("PLAYERSTV_LOG").unwrap_or_else(|_| EnvFilter::new("info"));
     if to_stderr {
         tracing_subscriber::fmt().with_env_filter(filter).with_writer(std::io::stderr).init();
         return None;
     }
-    let appender = tracing_appender::rolling::daily(paths::log_dir(), "playerstv.log");
+    // Daily files, same names as before (playerstv.log.YYYY-MM-DD), but only
+    // the newest two weeks are kept instead of growing forever.
+    let appender = tracing_appender::rolling::Builder::new()
+        .rotation(tracing_appender::rolling::Rotation::DAILY)
+        .filename_prefix("playerstv.log")
+        .max_log_files(LOG_DAYS_KEPT)
+        .build(paths::log_dir());
+    let appender = match appender {
+        Ok(a) => a,
+        Err(e) => {
+            // No log file is better than no app.
+            eprintln!("playerstv: logging disabled: {e}");
+            return None;
+        }
+    };
     let (writer, guard) = tracing_appender::non_blocking(appender);
     tracing_subscriber::fmt().with_env_filter(filter).with_ansi(false).with_writer(writer).init();
     Some(guard)

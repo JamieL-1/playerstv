@@ -18,8 +18,8 @@ use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuId, MenuItem, Predefin
 use tray_icon::{Icon, MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use windows::Win32::System::Threading::GetCurrentThreadId;
 use windows::Win32::UI::WindowsAndMessaging::{
-    DispatchMessageW, GetMessageW, KillTimer, PeekMessageW, PostThreadMessageW, SetTimer,
-    TranslateMessage, MSG, PM_NOREMOVE, WM_APP, WM_TIMER,
+    DispatchMessageW, GetMessageW, KillTimer, PeekMessageW, PostThreadMessageW, SetTimer, TranslateMessage, MSG,
+    PM_NOREMOVE, WM_APP, WM_TIMER,
 };
 
 use crate::control::{self, Request, Snapshot};
@@ -75,10 +75,7 @@ impl GameToggles {
 
     /// The game whose checkmark was clicked, with its new state.
     fn clicked(&self, id: &MenuId) -> Option<(String, bool)> {
-        self.items
-            .iter()
-            .find(|(item, _)| item.id() == id)
-            .map(|(item, game)| (game.clone(), item.is_checked()))
+        self.items.iter().find(|(item, _)| item.id() == id).map(|(item, game)| (game.clone(), item.is_checked()))
     }
 }
 
@@ -233,14 +230,19 @@ pub fn run(mut cfg: Config) -> Result<()> {
     let timer = unsafe { SetTimer(None, 0, 1000, None) };
 
     let mut status = Status::Waiting;
+    let mut last_tooltip = String::new();
     let mut last_saved: Option<PathBuf> = None;
 
     let mut msg = MSG::default();
     'outer: while unsafe { GetMessageW(&mut msg, None, 0, 0) }.as_bool() {
         if msg.message == WM_TIMER && msg.hwnd.is_invalid() {
-            if status.session_since().is_some() {
+            // Both the session timer and "Ns of 30s ready" change over time;
+            // only touch the menu when the text actually changed.
+            let line = tooltip(&status, &cfg);
+            if status.is_recording() && line != last_tooltip {
                 update_labels(&items, &cfg, &status);
-                let _ = tray.set_tooltip(Some(tooltip(&status, &cfg)));
+                let _ = tray.set_tooltip(Some(&line));
+                last_tooltip = line;
             }
             continue;
         }
@@ -383,7 +385,11 @@ fn snapshot_of(cfg: &Config, status: &Status, last_saved: Option<PathBuf>) -> Sn
 /// "1:02:03" or "12:34".
 pub fn format_elapsed(secs: u64) -> String {
     let (h, m, s) = (secs / 3600, secs / 60 % 60, secs % 60);
-    if h > 0 { format!("{h}:{m:02}:{s:02}") } else { format!("{m:02}:{s:02}") }
+    if h > 0 {
+        format!("{h}:{m:02}:{s:02}")
+    } else {
+        format!("{m:02}:{s:02}")
+    }
 }
 
 /// One-line description of the current state, e.g. "● REC 12:34 — RuneLite session".

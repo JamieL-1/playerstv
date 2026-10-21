@@ -34,10 +34,7 @@ pub fn unique_path(path: PathBuf) -> PathBuf {
     }
     let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("clip").to_owned();
     let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("mp4").to_owned();
-    (2..)
-        .map(|n| path.with_file_name(format!("{stem} ({n}).{ext}")))
-        .find(|p| !p.exists())
-        .expect("unbounded range")
+    (2..).map(|n| path.with_file_name(format!("{stem} ({n}).{ext}"))).find(|p| !p.exists()).expect("unbounded range")
 }
 
 /// Contents of an ffmpeg concat-demuxer list file.
@@ -54,12 +51,9 @@ pub fn concat_list(segments: &[Segment]) -> String {
 /// ffmpeg arguments that stream-copy the concat list into `output`.
 /// `audio_titles` names the audio tracks in order (e.g. ["Game", "Mic"]).
 pub fn export_args(list_file: &Path, output: &Path, audio_titles: &[&str]) -> Vec<String> {
-    let mut args: Vec<String> = [
-        "-hide_banner", "-nostdin", "-loglevel", "error", "-y",
-        "-f", "concat", "-safe", "0",
-    ]
-    .map(String::from)
-    .to_vec();
+    let mut args: Vec<String> = ["-hide_banner", "-nostdin", "-loglevel", "error", "-y", "-f", "concat", "-safe", "0"]
+        .map(String::from)
+        .to_vec();
     args.push("-i".into());
     args.push(list_file.to_string_lossy().into_owned());
     args.extend(["-map", "0", "-c", "copy"].map(String::from));

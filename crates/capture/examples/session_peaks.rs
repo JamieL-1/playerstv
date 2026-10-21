@@ -1,11 +1,11 @@
 //! Prints, for every output device, each audio session's process id, peak
 //! level and per-app mixer volume. Handy when a captured game track is
 //! unexpectedly quiet: process loopback records *after* the mixer volume.
+use wasapi::*;
 use windows::core::Interface;
 use windows::Win32::Media::Audio::Endpoints::IAudioMeterInformation;
 use windows::Win32::Media::Audio::{IAudioSessionControl2, IAudioSessionManager2, ISimpleAudioVolume};
 use windows::Win32::System::Com::CLSCTX_ALL;
-use wasapi::*;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _ = initialize_mta();

@@ -5,8 +5,7 @@ use windows::Win32::System::Threading::{
     OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    EnumWindows, GetClientRect, GetWindowTextW, GetWindowThreadProcessId, IsIconic, IsWindow,
-    IsWindowVisible,
+    EnumWindows, GetClientRect, GetWindowTextW, GetWindowThreadProcessId, IsIconic, IsWindow, IsWindowVisible,
 };
 
 /// A running game window that matched one of the profiles.
@@ -23,15 +22,19 @@ pub struct GameWindow {
 pub fn find_game(matchers: &[ProfileMatcher]) -> Option<GameWindow> {
     let mut windows: Vec<(HWND, u32, String)> = Vec::new();
     unsafe {
-        let _ = EnumWindows(
-            Some(collect_window),
-            LPARAM(&mut windows as *mut Vec<(HWND, u32, String)> as isize),
-        );
+        let _ = EnumWindows(Some(collect_window), LPARAM(&mut windows as *mut Vec<(HWND, u32, String)> as isize));
     }
+    // Title regexes are cheap; looking up a process's exe is a system call.
+    // So check titles first and look each exe up at most once, only for
+    // windows whose title some profile matches (usually none).
+    let mut exes: Vec<Option<Option<String>>> = vec![None; windows.len()];
     for m in matchers {
-        for (hwnd, pid, title) in &windows {
-            let Some(exe) = exe_name(*pid) else { continue };
-            if m.matches(&exe, title) {
+        for (i, (hwnd, pid, title)) in windows.iter().enumerate() {
+            if !m.title_matches(title) {
+                continue;
+            }
+            let exe = exes[i].get_or_insert_with(|| exe_name(*pid));
+            if exe.as_deref().is_some_and(|e| m.matches(e, title)) {
                 return Some(GameWindow {
                     hwnd: hwnd.0 as u64,
                     pid: *pid,
@@ -42,6 +45,22 @@ pub fn find_game(matchers: &[ProfileMatcher]) -> Option<GameWindow> {
         }
     }
     None
+}
+
+/// A visible top-level window with exactly this title, owned by another
+/// process running `exe`. Matching on the executable too means e.g. an
+/// Explorer window that happens to have the same title is never picked.
+pub fn find_window(title: &str, exe: &str) -> Option<u64> {
+    let mut windows: Vec<(HWND, u32, String)> = Vec::new();
+    unsafe {
+        let _ = EnumWindows(Some(collect_window), LPARAM(&mut windows as *mut Vec<(HWND, u32, String)> as isize));
+    }
+    let me = std::process::id();
+    windows
+        .into_iter()
+        .filter(|(_, pid, t)| t == title && *pid != me)
+        .find(|(_, pid, _)| exe_name(*pid).is_some_and(|e| e.eq_ignore_ascii_case(exe)))
+        .map(|(hwnd, _, _)| hwnd.0 as u64)
 }
 
 unsafe extern "system" fn collect_window(hwnd: HWND, lparam: LPARAM) -> BOOL {
@@ -89,9 +108,6 @@ pub fn client_size(hwnd: u64) -> (u32, u32) {
         if GetClientRect(hwnd, &mut rect).is_err() {
             return (0, 0);
         }
-        (
-            (rect.right - rect.left).max(0) as u32,
-            (rect.bottom - rect.top).max(0) as u32,
-        )
+        ((rect.right - rect.left).max(0) as u32, (rect.bottom - rect.top).max(0) as u32)
     }
 }

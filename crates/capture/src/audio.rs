@@ -13,8 +13,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result};
 use ptv_core::ffmpeg_args::{AUDIO_CHANNELS, AUDIO_RATE};
 use wasapi::{
-    AudioCaptureClient, AudioClient, DeviceEnumerator, Direction, Handle, SampleType, StreamMode,
-    WaveFormat,
+    AudioCaptureClient, AudioClient, DeviceEnumerator, Direction, Handle, SampleType, StreamMode, WaveFormat,
 };
 
 use crate::pipe::{self, PipeServer};
@@ -52,15 +51,13 @@ impl PipeFeeder {
         let thread = {
             let stop = stop.clone();
             let name = pipe_name.clone();
-            std::thread::Builder::new()
-                .name(format!("audio:{name}"))
-                .spawn(move || {
-                    if let Err(e) = run(source, &server, &stop) {
-                        if !stop.load(Ordering::Relaxed) {
-                            tracing::warn!("audio feeder {name} ended: {e:#}");
-                        }
+            std::thread::Builder::new().name(format!("audio:{name}")).spawn(move || {
+                if let Err(e) = run(source, &server, &stop) {
+                    if !stop.load(Ordering::Relaxed) {
+                        tracing::warn!("audio feeder {name} ended: {e:#}");
                     }
-                })?
+                }
+            })?
         };
         Ok(Self { pipe_name, stop, thread: Some(thread) })
     }
@@ -228,7 +225,11 @@ impl Stats {
         if self.since.elapsed() >= Duration::from_secs(5) {
             tracing::debug!(
                 "{source:?}: captured {} padded {} dropped {} frames, {} silent packets, peak {:.3}",
-                self.captured, self.padded, self.dropped, self.silent_packets, self.peak
+                self.captured,
+                self.padded,
+                self.dropped,
+                self.silent_packets,
+                self.peak
             );
             *self = Self::default();
         }
