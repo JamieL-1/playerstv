@@ -2,7 +2,6 @@
 //! the control channel the playerstv window talks to. Everything else happens
 //! on the supervisor thread.
 
-use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
@@ -460,18 +459,16 @@ fn toast(title: &str, text: &str) {
     }
 }
 
+/// Opens the app window (`playerstv-ui.exe`, shipped next to us). If it's
+/// already open it focuses itself (single-instance plugin).
 fn open_window() {
-    match std::env::current_exe() {
-        Ok(exe) => {
-            if let Err(e) = std::process::Command::new(exe)
-                .arg("--settings")
-                .creation_flags(crate::recorder::CREATE_NO_WINDOW)
-                .spawn()
-            {
-                tracing::error!("couldn't open window: {e}");
-            }
-        }
-        Err(e) => tracing::error!("couldn't find own exe: {e}"),
+    let ui = match std::env::current_exe() {
+        Ok(exe) => exe.with_file_name("playerstv-ui.exe"),
+        Err(e) => return tracing::error!("couldn't find own exe: {e}"),
+    };
+    if let Err(e) = std::process::Command::new(&ui).spawn() {
+        tracing::error!("couldn't open {}: {e}", ui.display());
+        toast("playerstv", &format!("Couldn't open the playerstv window ({}).", ui.display()));
     }
 }
 

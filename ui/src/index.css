@@ -1,0 +1,106 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+@import "@fontsource-variable/geist";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --color-rail: var(--rail);
+  --color-selected: var(--selected);
+  --font-heading: var(--font-sans);
+  --font-sans: "Geist Variable", sans-serif;
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar: var(--sidebar);
+  --color-chart-5: var(--chart-5);
+  --color-chart-4: var(--chart-4);
+  --color-chart-3: var(--chart-3);
+  --color-chart-2: var(--chart-2);
+  --color-chart-1: var(--chart-1);
+  --color-ring: var(--ring);
+  --color-input: var(--input);
+  --color-border: var(--border);
+  --color-destructive: var(--destructive);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent: var(--accent);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-muted: var(--muted);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-secondary: var(--secondary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary: var(--primary);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-popover: var(--popover);
+  --color-card-foreground: var(--card-foreground);
+  --color-card: var(--card);
+  --color-foreground: var(--foreground);
+  --color-background: var(--background);
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) * 1.4);
+  --radius-2xl: calc(var(--radius) * 1.8);
+  --radius-3xl: calc(var(--radius) * 2.2);
+  --radius-4xl: calc(var(--radius) * 2.6);
+}
+
+/* Defaults = Discord dark, so the first paint matches before the saved
+   theme is applied by src/theme/themes.ts (which sets these at runtime). */
+:root {
+  --rail: #1e1f22;
+  --background: #313338;
+  --foreground: #dbdee1;
+  --card: #2b2d31;
+  --card-foreground: #dbdee1;
+  --popover: #111214;
+  --popover-foreground: #dbdee1;
+  --primary: #5865f2;
+  --primary-foreground: #ffffff;
+  --secondary: #35373c;
+  --secondary-foreground: #dbdee1;
+  --muted: #35373c;
+  --muted-foreground: #949ba4;
+  --accent: #35373c;
+  --accent-foreground: #dbdee1;
+  --selected: #404249;
+  --destructive: #da373c;
+  --border: #ffffff14;
+  --input: #1e1f22;
+  --ring: #5865f2;
+  --chart-1: #5865f2;
+  --chart-2: #23a55a;
+  --chart-3: #f0b232;
+  --chart-4: #eb459e;
+  --chart-5: #f23f43;
+  --radius: 0.5rem;
+  --sidebar: #2b2d31;
+  --sidebar-foreground: #dbdee1;
+  --sidebar-primary: #5865f2;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: #35373c;
+  --sidebar-accent-foreground: #dbdee1;
+  --sidebar-border: #ffffff14;
+  --sidebar-ring: #5865f2;
+  --app-background: #1e1f22;
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply text-foreground;
+    background: var(--app-background);
+    overflow: hidden;
+    user-select: none;
+  }
+  html {
+    @apply font-sans;
+  }
+}

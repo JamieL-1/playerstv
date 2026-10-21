@@ -50,15 +50,16 @@ lookahead; above that it switches to a lighter preset and, for HEVC/AV1,
 splits frames across the GPU's NVENC engines so 4K120 keeps up.
 
 OSRS is mostly tiny coloured pixel text, which normal 4:2:0 video blurs
-(colour is stored at half resolution). Two ways to keep it sharp:
-
-| Option | Sharpness | Plays everywhere | Size |
-|---|---|---|---|
-| **Full colour detail (4:4:4)** | best | no — VLC/mpv/YouTube yes; Windows Media Player, browsers, Discord no | ~1.3× |
-| **2× pixel-perfect resolution** | as sharp (each pixel → 2×2 block) | yes, and YouTube serves it at 4K bitrates | ~2.5× |
+(colour is stored at half resolution). For sharp text, use the
+**2× pixel-perfect** resolution: every game pixel becomes a 2×2 block, so
+4:2:0 colour lands on exactly one sample per original pixel. It plays
+everywhere and YouTube serves it at 4K bitrates; files are ~2.5× bigger.
 
 Measured against a lossless capture of RuneLite (SSIM over RGB, higher is
-better): old cq 35 → 13.1 dB, tuned 4:2:0 → 16.5 dB, tuned 4:4:4 → 22.9 dB.
+better): old cq 35 → 13.1 dB, tuned 4:2:0 → 16.5 dB.
+
+Everything playerstv records is 4:2:0 H.264/HEVC/AV1 so the built-in player
+can play it. (4:4:4 was removed for that reason.)
 
 Choosing a fixed resolution larger than the game window upscales (bicubic):
 no extra detail locally, though YouTube gives higher resolutions more bitrate.

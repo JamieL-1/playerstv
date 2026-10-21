@@ -20,7 +20,7 @@ use windows::Win32::System::Pipes::{
     PIPE_TYPE_BYTE, PIPE_UNLIMITED_INSTANCES, PIPE_WAIT,
 };
 
-use crate::supervisor::Status;
+use crate::status::Status;
 
 const ERROR_PIPE_BUSY: i32 = 231;
 const ERROR_FILE_NOT_FOUND: i32 = 2;

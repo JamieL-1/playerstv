@@ -3,11 +3,10 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod autostart;
-mod control;
+// Shared with playerstv-ui; re-exported so `crate::paths` etc. keep working.
+pub use ptv_common::{control, paths};
 mod export;
-mod paths;
 mod recorder;
-mod settings;
 mod supervisor;
 mod tray;
 
@@ -23,7 +22,6 @@ use windows::Win32::System::Threading::CreateMutexW;
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let result = match args.first().map(String::as_str) {
-        Some("--settings") => settings::run(),
         Some("--smoke") => {
             let secs = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(15);
             smoke(secs)

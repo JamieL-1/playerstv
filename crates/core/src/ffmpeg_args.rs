@@ -131,7 +131,6 @@ pub struct EncodePlan {
     pub quality_modes: bool,
     /// Split each frame across multiple NVENC engines (HEVC/AV1 only).
     pub split_frames: bool,
-    pub full_chroma: bool,
     pub cq: u32,
     pub cap_mbps: u32,
 }
@@ -140,10 +139,8 @@ pub fn encode_plan(target: CaptureTarget, v: &VideoConfig) -> EncodePlan {
     let (width, height) = encoded_size(target, v);
     let pixels = width as u64 * height as u64;
     let heavy = pixels * v.fps as u64 > HEAVY_PIXEL_RATE;
-    let full_chroma = v.full_chroma && v.codec.supports_full_chroma();
     let auto_cap = {
         let bits = pixels as f64 * v.fps as f64 * v.quality.cap_bits_per_pixel();
-        let bits = if full_chroma { bits * 1.3 } else { bits };
         ((bits / 1e6).round() as u32).clamp(4, 300)
     };
     EncodePlan {
@@ -152,21 +149,19 @@ pub fn encode_plan(target: CaptureTarget, v: &VideoConfig) -> EncodePlan {
         preset: if heavy { "p4" } else { "p5" },
         quality_modes: !heavy,
         split_frames: heavy && v.codec != Codec::H264,
-        full_chroma,
         cq: v.quality.cq(v.codec),
         cap_mbps: v.bitrate_cap_mbps.unwrap_or(auto_cap),
     }
 }
 
-/// Human-readable summary, e.g. "1900×1030 · 120 fps · H.264 4:4:4 · High".
+/// Human-readable summary, e.g. "1900×1030 · 120 fps · H.264 · High quality".
 pub fn describe(plan: &EncodePlan, v: &VideoConfig) -> String {
     let codec = match v.codec {
         Codec::H264 => "H.264",
         Codec::Hevc => "HEVC",
         Codec::Av1 => "AV1",
     };
-    let chroma = if plan.full_chroma { " 4:4:4" } else { "" };
-    format!("{}×{} · {} fps · {codec}{chroma} · {} quality", plan.width, plan.height, v.fps, v.quality.short_name())
+    format!("{}×{} · {} fps · {codec} · {} quality", plan.width, plan.height, v.fps, v.quality.short_name())
 }
 
 #[rustfmt::skip] // keep each ffmpeg flag next to its value
@@ -242,9 +237,6 @@ pub fn record_args(spec: &RecordSpec) -> Vec<String> {
     }
     if plan.split_frames {
         push(&["-split_encode_mode", "forced"]);
-    }
-    if plan.full_chroma {
-        push(&["-rgb_mode", "yuv444"]);
     }
 
     if !spec.audio.is_empty() {
@@ -393,38 +385,36 @@ mod tests {
     }
 
     #[test]
-    fn bitrate_cap_and_chroma() {
+    fn bitrate_cap_and_summary() {
         let v = VideoConfig { fps: 60, quality: Quality::High, ..Default::default() };
         // 1900*1030*60*0.12 ≈ 14 Mbps
-        assert_eq!(encode_plan(target(), &v).cap_mbps, 14);
-        let v444 = VideoConfig { full_chroma: true, ..v.clone() };
-        let p = encode_plan(target(), &v444);
-        assert!(p.full_chroma);
-        assert_eq!(p.cap_mbps, 18);
-        assert_eq!(describe(&p, &v444), "1900×1030 · 60 fps · H.264 4:4:4 · High quality");
-        // AV1 can't do 4:4:4 on NVENC: silently 4:2:0.
-        let av1 = VideoConfig { codec: Codec::Av1, ..v444 };
-        assert!(!encode_plan(target(), &av1).full_chroma);
+        let p = encode_plan(target(), &v);
+        assert_eq!(p.cap_mbps, 14);
+        assert_eq!(describe(&p, &v), "1900×1030 · 60 fps · H.264 · High quality");
         // Manual cap wins.
         let manual = VideoConfig { bitrate_cap_mbps: Some(50), ..v };
         assert_eq!(encode_plan(target(), &manual).cap_mbps, 50);
     }
 
     #[test]
-    fn full_chroma_flag_reaches_ffmpeg() {
-        let v = VideoConfig { full_chroma: true, ..Default::default() };
+    fn always_4_2_0_so_the_app_player_can_play_it() {
+        // 4:4:4 (`-rgb_mode yuv444`) was removed; it must never come back
+        // by accident, for any codec.
         let dir = PathBuf::from("buf");
-        let s = record_args(&RecordSpec {
-            target: target(),
-            video: &v,
-            audio: &[],
-            mixed_track: true,
-            audio_bitrate_kbps: 160,
-            segment_dir: &dir,
-            start_index: 0,
-        })
-        .join(" ");
-        assert!(s.contains("-rgb_mode yuv444"));
+        for codec in Codec::ALL {
+            let v = VideoConfig { codec, ..Default::default() };
+            let s = record_args(&RecordSpec {
+                target: target(),
+                video: &v,
+                audio: &[],
+                mixed_track: true,
+                audio_bitrate_kbps: 160,
+                segment_dir: &dir,
+                start_index: 0,
+            })
+            .join(" ");
+            assert!(!s.contains("rgb_mode"), "{codec:?}");
+        }
     }
 
     #[test]
