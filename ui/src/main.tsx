@@ -28,6 +28,7 @@ const router = createHashRouter([
     ],
   },
   { path: "/settings/:section?", element: <SettingsLayout /> },
+  { path: "/settings/games/:gameId", element: <SettingsLayout /> },
   { path: "/watch", element: <WatchPage /> },
 ]);
 

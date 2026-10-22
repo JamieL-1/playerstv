@@ -19,6 +19,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
 import { AppearanceSection } from "./AppearanceSection";
 import { AudioSection } from "./AudioSection";
+import { GameSettingsPage } from "./GameSettingsPage";
 import { GamesSection } from "./GamesSection";
 import { HotkeysSection, RecordingSection } from "./RecordingSection";
 import { SettingsProvider, useSettings } from "./SettingsContext";
@@ -61,10 +62,15 @@ export function SettingsLayout() {
 }
 
 function SettingsScreen() {
-  const { section } = useParams();
+  const { section: sectionParam, gameId } = useParams();
   const navigate = useNavigate();
   const { dirty } = useSettings();
-  const current = SECTIONS.find((s) => s.id === section);
+  // /settings/games/:gameId is a page inside the Games section.
+  const section = gameId !== undefined ? "games" : sectionParam;
+  const current =
+    gameId !== undefined
+      ? { id: "games", label: "Games", Component: GameSettingsPage }
+      : SECTIONS.find((s) => s.id === section);
 
   // Esc closes, as in Discord (unless there are unsaved changes).
   useEffect(() => {

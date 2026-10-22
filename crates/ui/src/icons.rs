@@ -91,6 +91,7 @@ pub async fn add_game(app: AppHandle) -> Result<Option<String>, String> {
         exe_names: vec![exe_name],
         window_title_regex: ".*".into(),
         enabled: true,
+        overrides: Default::default(),
     });
     cfg.sanitize();
     // Before saving, so the rail's refresh on `config-changed` finds it.

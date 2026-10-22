@@ -1,6 +1,8 @@
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 
+use crate::config::GameOverrides;
+
 /// Describes how to recognise a game's window. Adding support for a new game
 /// is just adding another profile to the config.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -18,6 +20,9 @@ pub struct GameProfile {
     pub window_title_regex: String,
     #[serde(default = "default_true")]
     pub enabled: bool,
+    /// The game's own recording settings, on top of the global ones.
+    #[serde(default, skip_serializing_if = "GameOverrides::is_empty")]
+    pub overrides: GameOverrides,
 }
 
 fn default_true() -> bool {
@@ -59,6 +64,7 @@ impl GameProfile {
             exe_names: vec!["RuneLite.exe".into(), "javaw.exe".into(), "java.exe".into()],
             window_title_regex: r"^RuneLite( - .+)?$".into(),
             enabled: true,
+            overrides: GameOverrides::default(),
         }
     }
 
@@ -71,6 +77,7 @@ impl GameProfile {
             exe_names: vec!["League of Legends.exe".into()],
             window_title_regex: r"^League of Legends".into(),
             enabled: true,
+            overrides: GameOverrides::default(),
         }
     }
 
@@ -81,6 +88,7 @@ impl GameProfile {
             exe_names: vec!["cs2.exe".into()],
             window_title_regex: r"^Counter-Strike".into(),
             enabled: true,
+            overrides: GameOverrides::default(),
         }
     }
 
@@ -104,7 +112,7 @@ pub fn merge_builtins(games: &mut Vec<GameProfile>) {
             g.id = b.id.clone();
         }
     }
-    // One entry per built-in, with current rules and the user's toggle.
+    // One entry per built-in, with current rules and the user's settings.
     let mut seen = Vec::new();
     games.retain(|g| {
         !g.is_builtin() || {
@@ -114,9 +122,10 @@ pub fn merge_builtins(games: &mut Vec<GameProfile>) {
         }
     });
     for g in games.iter_mut().filter(|g| g.is_builtin()) {
-        let enabled = g.enabled;
+        let (enabled, overrides) = (g.enabled, std::mem::take(&mut g.overrides));
         *g = builtins.iter().find(|b| b.id == g.id).expect("is_builtin").clone();
         g.enabled = enabled;
+        g.overrides = overrides;
     }
     // Built-ins first, in their standard order; custom games after.
     for (i, b) in builtins.iter().enumerate() {
@@ -233,6 +242,7 @@ mod tests {
                 exe_names: vec!["javaw.exe".into()],
                 window_title_regex: "^Minecraft".into(),
                 enabled: true,
+                overrides: GameOverrides::default(),
             },
         ];
         merge_builtins(&mut games);
@@ -253,6 +263,7 @@ mod tests {
             exe_names: vec![],
             window_title_regex: ".*".into(),
             enabled: true,
+            overrides: GameOverrides::default(),
         });
         games.push(GameProfile {
             id: "custom-x".into(),
@@ -260,6 +271,7 @@ mod tests {
             exe_names: vec![],
             window_title_regex: ".*".into(),
             enabled: true,
+            overrides: GameOverrides::default(),
         });
         merge_builtins(&mut games);
         let once = games.clone();
@@ -267,6 +279,17 @@ mod tests {
         assert_eq!(games, once);
         let ids: Vec<&str> = games.iter().map(|g| g.id.as_str()).collect();
         assert_eq!(ids, [RUNELITE, LEAGUE, CS2, "custom-x", "custom-x-2"]);
+    }
+
+    #[test]
+    fn merge_keeps_builtin_overrides() {
+        let mut league = GameProfile { window_title_regex: "^old$".into(), ..GameProfile::league() };
+        league.overrides.record_full_session = Some(true);
+        let mut games = vec![league];
+        merge_builtins(&mut games);
+        let league = games.iter().find(|g| g.id == LEAGUE).unwrap();
+        assert_eq!(league.overrides.record_full_session, Some(true));
+        assert_eq!(league.window_title_regex, GameProfile::league().window_title_regex, "rules refreshed");
     }
 
     #[test]

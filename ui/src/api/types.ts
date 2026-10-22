@@ -27,12 +27,42 @@ export interface AudioConfig {
   bitrate_kbps: number;
 }
 
+/** A per-game bitrate cap: automatic, or a fixed peak in Mbps. */
+export type BitrateCap = "auto" | number;
+
+/** Per-game replacements; a missing key follows the global setting. */
+export interface VideoOverrides {
+  resolution?: Resolution;
+  fps?: number;
+  codec?: Codec;
+  quality?: Quality;
+  bitrate_cap?: BitrateCap;
+}
+
+export interface AudioOverrides {
+  game_audio?: boolean;
+  source?: AudioSourceKind;
+  mic?: boolean;
+  game_volume?: number;
+  mic_volume?: number;
+  mixed_track?: boolean;
+}
+
+export interface GameOverrides {
+  record_full_session?: boolean;
+  buffer_seconds?: number;
+  video?: VideoOverrides;
+  audio?: AudioOverrides;
+}
+
 export interface GameProfile {
   id: string;
   name: string;
   exe_names: string[];
   window_title_regex: string;
   enabled: boolean;
+  /** Absent when the game uses the global settings for everything. */
+  overrides?: GameOverrides;
 }
 
 export interface Gradient {
@@ -64,7 +94,7 @@ export interface Config {
 
 export type Status =
   | { state: "waiting" }
-  | { state: "recording"; game: string; since: number; session_since: number | null; video: string }
+  | { state: "recording"; game: string; since: number; session_since: number | null; video: string; buffer_seconds: number }
   | { state: "failing"; game: string; error: string };
 
 /** What the tray reports; `null` when the tray app isn't running. */

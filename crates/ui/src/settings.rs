@@ -54,6 +54,13 @@ pub async fn save_config(mut config: Config) -> Result<Config, String> {
     Ok(config)
 }
 
+/// Factory settings, for "Restore default settings" (the window decides
+/// what to keep).
+#[tauri::command]
+pub async fn default_config() -> Config {
+    Config::default()
+}
+
 /// One game's on/off switch, written straight away without touching any
 /// other unsaved edits in the window.
 #[tauri::command]

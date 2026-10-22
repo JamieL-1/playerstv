@@ -1,41 +1,10 @@
-import { useMemo } from "react";
-import { LIMITS, type Codec, type Quality, type Resolution } from "@/api/types";
+import { LIMITS, type Codec, type Resolution } from "@/api/types";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Slider } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
 import { Hint, SectionTitle, SettingRow } from "./controls";
+import { CODECS, OVERRIDE_NOTE, QUALITIES, RESOLUTIONS, usePlayableCodecs } from "./options";
 import { useSettings } from "./SettingsContext";
-
-const RESOLUTIONS: { value: Resolution; label: string }[] = [
-  { value: "native", label: "Native (window size)" },
-  { value: "2x", label: "2× pixel-perfect (sharpest)" },
-  { value: "720p", label: "720p" },
-  { value: "1080p", label: "1080p" },
-  { value: "1440p", label: "1440p" },
-  { value: "2160p", label: "4K (2160p)" },
-];
-
-const CODECS: { value: Codec; label: string; probe: string }[] = [
-  { value: "h264", label: "H.264 (most compatible)", probe: 'video/mp4; codecs="avc1.640028"' },
-  { value: "hevc", label: "HEVC / H.265 (smaller files)", probe: 'video/mp4; codecs="hvc1.1.6.L120.90"' },
-  { value: "av1", label: "AV1 (smallest, RTX 40+)", probe: 'video/mp4; codecs="av01.0.08M.08"' },
-];
-
-const QUALITIES: { value: Quality; label: string }[] = [
-  { value: "low", label: "Low (small files)" },
-  { value: "medium", label: "Medium" },
-  { value: "high", label: "High" },
-  { value: "very_high", label: "Very high" },
-  { value: "max", label: "Maximum (big files)" },
-];
-
-/** Which codecs this PC's WebView can play back in the app's player. */
-function usePlayableCodecs(): Set<Codec> {
-  return useMemo(() => {
-    const v = document.createElement("video");
-    return new Set(CODECS.filter((c) => v.canPlayType(c.probe) !== "").map((c) => c.value));
-  }, []);
-}
 
 export function VideoSection() {
   const { draft, update } = useSettings();
@@ -52,7 +21,7 @@ export function VideoSection() {
     <>
       <SectionTitle
         title="Video"
-        description="Encoded on your NVIDIA GPU (NVENC), so recording costs almost nothing."
+        description={`Encoded on your NVIDIA GPU (NVENC), so recording costs almost nothing. ${OVERRIDE_NOTE}`}
       />
       <SettingRow label="Resolution">
         <Select value={v.resolution} onValueChange={(r) => set({ resolution: r as Resolution })}>
