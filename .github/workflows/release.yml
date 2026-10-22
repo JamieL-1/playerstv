@@ -82,7 +82,7 @@ jobs:
         run: cargo update --workspace
 
       - name: Cache FFmpeg download
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ${{ runner.temp }}/ffmpeg-cache
           key: ffmpeg-${{ hashFiles('scripts/fetch-ffmpeg.ps1') }}
