@@ -13,6 +13,7 @@ export const backend = {
 
   getConfig: () => invoke<Config>("get_config"),
   saveConfig: (config: Config) => invoke<Config>("save_config", { config }),
+  defaultConfig: () => invoke<Config>("default_config"),
   setGameEnabled: (id: string, enabled: boolean) => invoke<void>("set_game_enabled", { id, enabled }),
   setUiConfig: (ui: UiConfig) => invoke<UiConfig>("set_ui_config", { ui }),
   validateHotkey: (hotkey: string) => invoke<boolean>("validate_hotkey", { hotkey }),

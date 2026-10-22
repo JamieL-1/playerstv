@@ -53,6 +53,8 @@ pub type EventSink = Arc<dyn Fn(Event) + Send + Sync>;
 
 struct Active {
     window: GameWindow,
+    /// The settings this game records with: [`Config::for_game`].
+    settings: Config,
     dir: PathBuf,
     /// Held open exclusively for the buffer's lifetime: see [`buffer_in_use`].
     _lock: std::fs::File,
@@ -157,7 +159,7 @@ impl Supervisor {
                     self.restart_recorder(&mut active);
                 }
                 if self.exports_in_flight.load(Ordering::SeqCst) == 0 {
-                    prune(&active.dir, self.cfg.buffer_seconds, active.session_from);
+                    prune(&active.dir, active.settings.buffer_seconds, active.session_from);
                 }
                 self.active = Some(active);
             }
@@ -179,7 +181,7 @@ impl Supervisor {
         if has_session_footage {
             self.finish_session(active, false);
         }
-        start_recorder(&self.ffmpeg, &self.cfg, active);
+        start_recorder(&self.ffmpeg, active);
         if continue_session {
             begin_session(active);
         }
@@ -201,6 +203,7 @@ impl Supervisor {
             }
         };
         let mut active = Active {
+            settings: self.cfg.for_game(&window.profile.id),
             window,
             dir,
             _lock: lock,
@@ -214,8 +217,8 @@ impl Supervisor {
             retry_at: Instant::now(),
             last_error: None,
         };
-        start_recorder(&self.ffmpeg, &self.cfg, &mut active);
-        if self.cfg.record_full_session {
+        start_recorder(&self.ffmpeg, &mut active);
+        if active.settings.record_full_session {
             begin_session(&mut active);
         }
         self.active = Some(active);
@@ -236,8 +239,6 @@ impl Supervisor {
     }
 
     fn reload(&mut self, cfg: Config) {
-        let restart = cfg.capture_changed(&self.cfg);
-        let session_turned_on = cfg.record_full_session && !self.cfg.record_full_session;
         let policy = StoragePolicy::of(&cfg);
         let storage_changed = {
             let mut current = self.storage.lock().unwrap_or_else(|e| e.into_inner());
@@ -259,6 +260,12 @@ impl Supervisor {
             self.stop_game(); // saves a full session if one was running
             return;
         }
+        // Only this game's settings matter: another game's overrides
+        // changing mustn't restart (and split) this recording.
+        let settings = self.cfg.for_game(&active.window.profile.id);
+        let restart = settings.capture_changed(&active.settings);
+        let session_turned_on = settings.record_full_session && !active.settings.record_full_session;
+        active.settings = settings;
         if restart {
             tracing::info!("capture settings changed, restarting encoder");
             active.failures = 0;
@@ -288,7 +295,7 @@ impl Supervisor {
             dir: active.dir.clone(),
             first: active.epoch_from,
             last: latest,
-            seconds: self.cfg.buffer_seconds,
+            seconds: active.settings.buffer_seconds,
         };
         self.spawn_export(source, out, titles, ExportKind::Clip, None);
     }
@@ -416,6 +423,7 @@ impl Supervisor {
                     since: a.recording_since,
                     session_since: a.session_since,
                     video: a.recorder.as_ref().map(|r| r.video_summary.clone()).unwrap_or_default(),
+                    buffer_seconds: a.settings.buffer_seconds,
                 },
             },
         }
@@ -482,10 +490,10 @@ fn matchers(cfg: &Config) -> Vec<ProfileMatcher> {
         .collect()
 }
 
-fn start_recorder(ffmpeg: &Path, cfg: &Config, active: &mut Active) {
+fn start_recorder(ffmpeg: &Path, active: &mut Active) {
     let start = ring::next_index(&ring::scan(&active.dir).unwrap_or_default());
     active.epoch_from = start;
-    match Recorder::start(ffmpeg, &active.window, cfg, &active.dir, start) {
+    match Recorder::start(ffmpeg, &active.window, &active.settings, &active.dir, start) {
         Ok(rec) => {
             active.audio_titles = rec.audio_titles.clone();
             let meta = format!("{}\n{}\n", active.window.profile.name, active.audio_titles.join(","));

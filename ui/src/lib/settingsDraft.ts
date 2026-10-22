@@ -22,6 +22,25 @@ export function mergeExternalChange(draft: Config, saved: Config, incoming: Conf
   };
 }
 
+/**
+ * "Restore default settings": factory recording, video, audio, hotkey and
+ * storage settings, and no per-game customizations. Keeps what would hurt
+ * to lose: the games themselves (custom ones, on/off switches), the output
+ * folder (the library reads it) and the appearance.
+ */
+export function restoreDefaults(current: Config, defaults: Config): Config {
+  return {
+    ...defaults,
+    output_dir: current.output_dir,
+    ui: current.ui,
+    games: current.games.map((g) => {
+      const kept = { ...g };
+      delete kept.overrides;
+      return kept;
+    }),
+  };
+}
+
 export function isDirty(draft: Config | undefined, saved: Config | undefined): boolean {
   return Boolean(draft && saved && !sameJson(draft, saved));
 }

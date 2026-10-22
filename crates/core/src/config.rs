@@ -230,6 +230,163 @@ impl Default for AudioConfig {
     }
 }
 
+/// A per-game bitrate cap: automatic, or a fixed peak. Written as `"auto"`
+/// or a number, so "not overridden" can simply be a missing key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BitrateCap {
+    Auto,
+    Mbps(u32),
+}
+
+impl BitrateCap {
+    /// The [`VideoConfig::bitrate_cap_mbps`] this stands for.
+    pub fn mbps(self) -> Option<u32> {
+        match self {
+            BitrateCap::Auto => None,
+            BitrateCap::Mbps(m) => Some(m),
+        }
+    }
+}
+
+impl Serialize for BitrateCap {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        match self {
+            BitrateCap::Auto => s.serialize_str("auto"),
+            BitrateCap::Mbps(m) => s.serialize_u32(*m),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for BitrateCap {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Repr {
+            Mbps(u32),
+            Text(String),
+        }
+        match Repr::deserialize(d)? {
+            Repr::Mbps(m) => Ok(BitrateCap::Mbps(m)),
+            Repr::Text(t) if t == "auto" => Ok(BitrateCap::Auto),
+            Repr::Text(t) => {
+                Err(serde::de::Error::custom(format!("bitrate cap must be \"auto\" or a number, not {t:?}")))
+            }
+        }
+    }
+}
+
+/// Per-game replacements for [`VideoConfig`] fields; `None` follows the
+/// global setting.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct VideoOverrides {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resolution: Option<Resolution>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fps: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub codec: Option<Codec>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub quality: Option<Quality>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bitrate_cap: Option<BitrateCap>,
+}
+
+impl VideoOverrides {
+    pub fn is_empty(&self) -> bool {
+        *self == Self::default()
+    }
+
+    fn apply(&self, v: &mut VideoConfig) {
+        v.resolution = self.resolution.unwrap_or(v.resolution);
+        v.fps = self.fps.unwrap_or(v.fps);
+        v.codec = self.codec.unwrap_or(v.codec);
+        v.quality = self.quality.unwrap_or(v.quality);
+        if let Some(cap) = self.bitrate_cap {
+            v.bitrate_cap_mbps = cap.mbps();
+        }
+    }
+}
+
+/// Per-game replacements for [`AudioConfig`] fields. The mic device and
+/// audio bitrate stay global: they describe the PC, not the game.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AudioOverrides {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub game_audio: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<AudioSourceKind>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mic: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub game_volume: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mic_volume: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mixed_track: Option<bool>,
+}
+
+impl AudioOverrides {
+    pub fn is_empty(&self) -> bool {
+        *self == Self::default()
+    }
+
+    fn apply(&self, a: &mut AudioConfig) {
+        a.game_audio = self.game_audio.unwrap_or(a.game_audio);
+        a.source = self.source.unwrap_or(a.source);
+        a.mic = self.mic.unwrap_or(a.mic);
+        a.game_volume = self.game_volume.unwrap_or(a.game_volume);
+        a.mic_volume = self.mic_volume.unwrap_or(a.mic_volume);
+        a.mixed_track = self.mixed_track.unwrap_or(a.mixed_track);
+    }
+}
+
+/// A game's own recording settings. Anything left unset uses the global
+/// setting, so changing a global still reaches every game that didn't
+/// override it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct GameOverrides {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub record_full_session: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub buffer_seconds: Option<u32>,
+    #[serde(skip_serializing_if = "VideoOverrides::is_empty")]
+    pub video: VideoOverrides,
+    #[serde(skip_serializing_if = "AudioOverrides::is_empty")]
+    pub audio: AudioOverrides,
+}
+
+impl GameOverrides {
+    pub fn is_empty(&self) -> bool {
+        *self == Self::default()
+    }
+
+    /// Same ranges as the global settings.
+    pub fn sanitize(&mut self) {
+        self.buffer_seconds = self.buffer_seconds.map(clamp_buffer_seconds);
+        self.video.fps = self.video.fps.map(clamp_fps);
+        if let Some(BitrateCap::Mbps(m)) = &mut self.video.bitrate_cap {
+            *m = clamp_bitrate_cap(*m);
+        }
+        self.audio.game_volume = self.audio.game_volume.map(|v| v.min(MAX_VOLUME_PERCENT));
+        self.audio.mic_volume = self.audio.mic_volume.map(|v| v.min(MAX_VOLUME_PERCENT));
+    }
+}
+
+fn clamp_buffer_seconds(s: u32) -> u32 {
+    s.clamp(MIN_BUFFER_SECONDS, MAX_BUFFER_SECONDS)
+}
+
+fn clamp_fps(fps: u32) -> u32 {
+    fps.clamp(10, 120)
+}
+
+fn clamp_bitrate_cap(mbps: u32) -> u32 {
+    mbps.clamp(*BITRATE_CAP_MBPS.start(), *BITRATE_CAP_MBPS.end())
+}
+
 /// Base colour scheme of the window (Discord-style).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
@@ -376,14 +533,16 @@ impl Config {
 
     /// Clamp values a hand-edited config might get wrong.
     pub fn sanitize(&mut self) {
-        self.buffer_seconds = self.buffer_seconds.clamp(MIN_BUFFER_SECONDS, MAX_BUFFER_SECONDS);
-        self.video.fps = self.video.fps.clamp(10, 120);
-        self.video.bitrate_cap_mbps =
-            self.video.bitrate_cap_mbps.map(|m| m.clamp(*BITRATE_CAP_MBPS.start(), *BITRATE_CAP_MBPS.end()));
+        self.buffer_seconds = clamp_buffer_seconds(self.buffer_seconds);
+        self.video.fps = clamp_fps(self.video.fps);
+        self.video.bitrate_cap_mbps = self.video.bitrate_cap_mbps.map(clamp_bitrate_cap);
         self.audio.bitrate_kbps = self.audio.bitrate_kbps.clamp(*AUDIO_BITRATE_KBPS.start(), *AUDIO_BITRATE_KBPS.end());
         self.audio.game_volume = self.audio.game_volume.min(MAX_VOLUME_PERCENT);
         self.audio.mic_volume = self.audio.mic_volume.min(MAX_VOLUME_PERCENT);
         profile::merge_builtins(&mut self.games);
+        for g in &mut self.games {
+            g.overrides.sanitize();
+        }
         self.ui.sanitize();
         self.storage_limit_gb =
             self.storage_limit_gb.map(|g| g.clamp(*STORAGE_LIMIT_GB.start(), *STORAGE_LIMIT_GB.end()));
@@ -395,9 +554,27 @@ impl Config {
 
     /// True if a change from `old` to `self` requires restarting the encoder.
     /// Game list changes don't count: toggling another game mustn't restart
-    /// (and split) the recording of the one being played.
+    /// (and split) the recording of the one being played. Compare the
+    /// [`Self::for_game`] views to include that game's own overrides.
     pub fn capture_changed(&self, old: &Config) -> bool {
         self.video != old.video || self.audio != old.audio
+    }
+
+    /// The settings a game actually records with: its overrides on top of
+    /// the global settings. Unknown ids get the global settings.
+    pub fn for_game(&self, id: &str) -> Config {
+        let mut cfg = self.clone();
+        let Some(o) = self.games.iter().find(|g| g.id == id).map(|g| &g.overrides) else { return cfg };
+        cfg.record_full_session = o.record_full_session.unwrap_or(cfg.record_full_session);
+        cfg.buffer_seconds = o.buffer_seconds.map_or(cfg.buffer_seconds, clamp_buffer_seconds);
+        o.video.apply(&mut cfg.video);
+        o.audio.apply(&mut cfg.audio);
+        // Overrides from a config that skipped sanitize() still get clamped.
+        cfg.video.fps = clamp_fps(cfg.video.fps);
+        cfg.video.bitrate_cap_mbps = cfg.video.bitrate_cap_mbps.map(clamp_bitrate_cap);
+        cfg.audio.game_volume = cfg.audio.game_volume.min(MAX_VOLUME_PERCENT);
+        cfg.audio.mic_volume = cfg.audio.mic_volume.min(MAX_VOLUME_PERCENT);
+        cfg
     }
 
     pub fn game_enabled(&self, id: &str) -> bool {
@@ -534,5 +711,95 @@ mod tests {
         assert_eq!(cfg.buffer_seconds, MIN_BUFFER_SECONDS);
         assert_eq!(cfg.video.fps, 120);
         assert_eq!(cfg.games.len(), 3);
+    }
+
+    fn game_mut<'a>(cfg: &'a mut Config, id: &str) -> &'a mut GameOverrides {
+        &mut cfg.games.iter_mut().find(|g| g.id == id).unwrap().overrides
+    }
+
+    #[test]
+    fn configs_without_overrides_stay_clean() {
+        let cfg: Config = toml::from_str("buffer_seconds = 30\n").unwrap();
+        assert!(cfg.games.iter().all(|g| g.overrides.is_empty()));
+        assert!(!toml::to_string_pretty(&cfg).unwrap().contains("overrides"));
+    }
+
+    #[test]
+    fn overrides_round_trip() {
+        let mut cfg = Config::default();
+        let o = game_mut(&mut cfg, profile::LEAGUE);
+        o.record_full_session = Some(true);
+        o.video.fps = Some(120);
+        o.video.bitrate_cap = Some(BitrateCap::Mbps(80));
+        o.audio.source = Some(AudioSourceKind::Desktop);
+        game_mut(&mut cfg, profile::RUNELITE).video.bitrate_cap = Some(BitrateCap::Auto);
+        let text = toml::to_string_pretty(&cfg).unwrap();
+        let mut back: Config = toml::from_str(&text).unwrap();
+        assert_eq!(back, cfg, "{text}");
+        // Survives the load-time clean-up too (built-ins are rebuilt there).
+        back.sanitize();
+        assert_eq!(back, cfg);
+        // Only what's set is written.
+        assert!(text.contains("[games.overrides.audio]\nsource = \"desktop\"\n\n[[games]]"), "{text}");
+    }
+
+    #[test]
+    fn bitrate_cap_formats() {
+        let o: VideoOverrides = toml::from_str("bitrate_cap = \"auto\"").unwrap();
+        assert_eq!(o.bitrate_cap, Some(BitrateCap::Auto));
+        let o: VideoOverrides = toml::from_str("bitrate_cap = 50").unwrap();
+        assert_eq!(o.bitrate_cap, Some(BitrateCap::Mbps(50)));
+        assert!(toml::from_str::<VideoOverrides>("bitrate_cap = \"fast\"").is_err());
+    }
+
+    #[test]
+    fn for_game_layers_overrides_on_globals() {
+        let mut cfg = Config { buffer_seconds: 45, ..Default::default() };
+        cfg.video.bitrate_cap_mbps = Some(40);
+        let o = game_mut(&mut cfg, profile::LEAGUE);
+        o.record_full_session = Some(true);
+        o.video.fps = Some(120);
+        o.video.bitrate_cap = Some(BitrateCap::Auto);
+        o.audio.mic = Some(false);
+
+        let league = cfg.for_game(profile::LEAGUE);
+        assert!(league.record_full_session);
+        assert_eq!(league.buffer_seconds, 45, "not overridden: global");
+        assert_eq!(league.video.fps, 120);
+        assert_eq!(league.video.codec, cfg.video.codec);
+        assert_eq!(league.video.bitrate_cap_mbps, None, "auto overrides a fixed global cap");
+        assert!(!league.audio.mic);
+        assert_eq!(league.audio.game_volume, cfg.audio.game_volume);
+
+        assert_eq!(cfg.for_game(profile::RUNELITE), cfg);
+        assert_eq!(cfg.for_game("nope"), cfg);
+    }
+
+    #[test]
+    fn overrides_are_clamped() {
+        let mut cfg = Config::default();
+        let o = game_mut(&mut cfg, profile::CS2);
+        o.buffer_seconds = Some(1);
+        o.video.fps = Some(500);
+        o.video.bitrate_cap = Some(BitrateCap::Mbps(9_999));
+        o.audio.mic_volume = Some(9_999);
+        // Applied even before sanitize()…
+        let cs2 = cfg.for_game(profile::CS2);
+        assert_eq!((cs2.buffer_seconds, cs2.video.fps), (MIN_BUFFER_SECONDS, 120));
+        // …and stored clamped after it.
+        cfg.sanitize();
+        let o = &game_mut(&mut cfg, profile::CS2);
+        assert_eq!(o.video.bitrate_cap, Some(BitrateCap::Mbps(*BITRATE_CAP_MBPS.end())));
+        assert_eq!(o.audio.mic_volume, Some(MAX_VOLUME_PERCENT));
+    }
+
+    #[test]
+    fn only_the_active_games_overrides_restart_it() {
+        let old = Config::default();
+        let mut new = old.clone();
+        game_mut(&mut new, profile::CS2).video.fps = Some(120);
+        let changed = |id| new.for_game(id).capture_changed(&old.for_game(id));
+        assert!(changed(profile::CS2));
+        assert!(!changed(profile::LEAGUE), "another game's settings don't split this recording");
     }
 }

@@ -18,6 +18,9 @@ pub enum Status {
         /// What's being encoded, e.g. "1900×1030 · 60 fps · H.264 · High quality".
         #[serde(default)]
         video: String,
+        /// This game's replay buffer length (games can override the global one).
+        #[serde(default)]
+        buffer_seconds: u32,
     },
     /// Game found but the encoder keeps failing.
     Failing {
@@ -31,6 +34,14 @@ impl Status {
         match self {
             Status::Recording { session_since, .. } => *session_since,
             _ => None,
+        }
+    }
+
+    /// The recording game's buffer length, else `default`.
+    pub fn buffer_seconds_or(&self, default: u32) -> u32 {
+        match self {
+            Status::Recording { buffer_seconds, .. } if *buffer_seconds > 0 => *buffer_seconds,
+            _ => default,
         }
     }
 

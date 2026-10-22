@@ -316,7 +316,9 @@ pub fn run(mut cfg: Config, show_window: bool) -> Result<()> {
                 AppEvent::Supervisor(supervisor::Event::Saved { path, kind }) => {
                     if cfg.notifications {
                         let title = match kind {
-                            ExportKind::Clip => format!("Clip saved ({}s)", cfg.buffer_seconds),
+                            ExportKind::Clip => {
+                                format!("Clip saved ({}s)", status.buffer_seconds_or(cfg.buffer_seconds))
+                            }
                             ExportKind::Session => "Session saved".to_owned(),
                         };
                         toast(&title, &path.file_name().unwrap_or_default().to_string_lossy());
@@ -386,7 +388,7 @@ pub fn run(mut cfg: Config, show_window: bool) -> Result<()> {
 fn snapshot_of(cfg: &Config, status: &Status, last_saved: Option<PathBuf>) -> Snapshot {
     Snapshot {
         status: status.clone(),
-        buffer_seconds: cfg.buffer_seconds,
+        buffer_seconds: status.buffer_seconds_or(cfg.buffer_seconds),
         clip_hotkey: cfg.clip_hotkey.clone(),
         session_hotkey: cfg.session_hotkey.clone(),
         output_dir: cfg.output_dir.clone(),
@@ -425,8 +427,9 @@ pub fn status_line(status: &Status, buffer_seconds: u32) -> String {
 
 fn update_labels(items: &Items, cfg: &Config, status: &Status) {
     let hk = |s: &str| if s.trim().is_empty() { String::new() } else { format!("\t{s}") };
-    items.status.set_text(status_line(status, cfg.buffer_seconds));
-    items.clip.set_text(format!("Save last {}s{}", cfg.buffer_seconds, hk(&cfg.clip_hotkey)));
+    let buffer_seconds = status.buffer_seconds_or(cfg.buffer_seconds);
+    items.status.set_text(status_line(status, buffer_seconds));
+    items.clip.set_text(format!("Save last {buffer_seconds}s{}", hk(&cfg.clip_hotkey)));
     items.clip.set_enabled(status.is_recording());
     let label = match status.session_since() {
         Some(t) => format!("■ Stop && save session ({})", format_elapsed(unix_now().saturating_sub(t))),
@@ -437,7 +440,7 @@ fn update_labels(items: &Items, cfg: &Config, status: &Status) {
 }
 
 fn tooltip(status: &Status, cfg: &Config) -> String {
-    format!("playerstv — {}", status_line(status, cfg.buffer_seconds))
+    format!("playerstv — {}", status_line(status, status.buffer_seconds_or(cfg.buffer_seconds)))
 }
 
 /// A plain coloured dot: grey = idle, green = buffering, red = full session,

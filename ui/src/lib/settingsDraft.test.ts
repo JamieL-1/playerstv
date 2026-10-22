@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Config } from "@/api/types";
-import { isDirty, mergeExternalChange } from "./settingsDraft";
+import { isDirty, mergeExternalChange, restoreDefaults } from "./settingsDraft";
 
 const base: Config = {
   buffer_seconds: 30,
@@ -55,5 +55,27 @@ describe("isDirty", () => {
     expect(isDirty(base, structuredClone(base))).toBe(false);
     expect(isDirty({ ...base, buffer_seconds: 31 }, base)).toBe(true);
     expect(isDirty(undefined, base)).toBe(false);
+  });
+});
+
+describe("restoreDefaults", () => {
+  it("resets settings but keeps games, output folder and appearance", () => {
+    const current: Config = {
+      ...withGame(base, "cs2", false),
+      buffer_seconds: 120,
+      record_full_session: true,
+      output_dir: "D:/Clips",
+      ui: { ...base.ui, accent: "#eb459e" },
+    };
+    current.games[0] = { ...current.games[0]!, overrides: { video: { fps: 120 } } };
+    const defaults: Config = { ...base, games: [], output_dir: "C:/default/playerstv" };
+    const restored = restoreDefaults(current, defaults);
+    expect(restored.buffer_seconds).toBe(30);
+    expect(restored.record_full_session).toBe(false);
+    expect(restored.output_dir).toBe("D:/Clips");
+    expect(restored.ui.accent).toBe("#eb459e");
+    expect(restored.games.map((g) => g.id)).toEqual(["runelite", "cs2"]);
+    expect(restored.games[1]!.enabled).toBe(false);
+    expect("overrides" in restored.games[0]!).toBe(false);
   });
 });

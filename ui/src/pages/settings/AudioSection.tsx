@@ -6,6 +6,7 @@ import { Slider } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { Hint, SectionTitle, SettingRow } from "./controls";
+import { OVERRIDE_NOTE } from "./options";
 import { useSettings } from "./SettingsContext";
 
 const DEFAULT_MIC = "__default__";
@@ -35,7 +36,7 @@ export function AudioSection() {
 
   return (
     <>
-      <SectionTitle title="Audio" description={`Tracks in each recording: ${tracks}`} />
+      <SectionTitle title="Audio" description={`Tracks in each recording: ${tracks}. ${OVERRIDE_NOTE}`} />
       <SettingRow label="Record computer audio">
         <Switch checked={a.game_audio} onCheckedChange={(v) => set({ game_audio: v })} />
       </SettingRow>

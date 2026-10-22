@@ -1,11 +1,25 @@
-import { FolderOpen } from "lucide-react";
+import { FolderOpen, RotateCcw } from "lucide-react";
+import { toast } from "sonner";
 import { backend } from "@/api/backend";
 import { LIMITS } from "@/api/types";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Slider } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
+import { restoreDefaults } from "@/lib/settingsDraft";
 import { HotkeyRecorder, SectionTitle, SettingRow } from "./controls";
+import { OVERRIDE_NOTE } from "./options";
 import { useSettings } from "./SettingsContext";
 
 export function RecordingSection() {
@@ -13,7 +27,7 @@ export function RecordingSection() {
   const [min, max] = LIMITS.bufferSeconds;
   return (
     <>
-      <SectionTitle title="Recording" description="What gets recorded and where it's saved." />
+      <SectionTitle title="Recording" description={`What gets recorded and where it's saved. ${OVERRIDE_NOTE}`} />
       <SettingRow
         label="Replay buffer length"
         description="How much of the last few minutes is kept, and saved when you clip."
@@ -67,7 +81,48 @@ export function RecordingSection() {
       <SettingRow label="Notifications" description="Show a notification when a clip or session is saved.">
         <Switch checked={draft.notifications} onCheckedChange={(v) => update((c) => ({ ...c, notifications: v }))} />
       </SettingRow>
+      <SettingRow
+        label="Restore default settings"
+        description="Recording, video, audio, hotkeys and storage go back to how playerstv ships, and game customizations are cleared. Your games, output folder and appearance stay."
+      >
+        <RestoreDefaultsButton />
+      </SettingRow>
     </>
+  );
+}
+
+function RestoreDefaultsButton() {
+  const { update } = useSettings();
+  const restore = async () => {
+    try {
+      const defaults = await backend.defaultConfig();
+      update((c) => restoreDefaults(c, defaults));
+      toast("Defaults restored — Save Changes to keep them, or Reset to undo.");
+    } catch (e) {
+      toast.error(String(e));
+    }
+  };
+  return (
+    <AlertDialog>
+      <AlertDialogTrigger asChild>
+        <Button variant="secondary">
+          <RotateCcw /> Restore defaults
+        </Button>
+      </AlertDialogTrigger>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>Restore default settings?</AlertDialogTitle>
+          <AlertDialogDescription>
+            Recording, video, audio, hotkey and storage settings are reset and every game's customizations are cleared.
+            Nothing changes until you click Save Changes.
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel>Cancel</AlertDialogCancel>
+          <AlertDialogAction onClick={() => void restore()}>Restore defaults</AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
   );
 }
 

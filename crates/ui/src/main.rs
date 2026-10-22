@@ -72,6 +72,7 @@ fn run_window() {
             status::start_tray,
             settings::get_config,
             settings::save_config,
+            settings::default_config,
             settings::set_game_enabled,
             settings::set_ui_config,
             settings::validate_hotkey,

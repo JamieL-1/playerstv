@@ -1,4 +1,5 @@
-import { Plus, Trash2 } from "lucide-react";
+import { Plus, SlidersHorizontal, Trash2 } from "lucide-react";
+import { useNavigate } from "react-router";
 import { BUILTIN_GAME_IDS, type GameProfile } from "@/api/types";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -6,6 +7,7 @@ import { Switch } from "@/components/ui/switch";
 import { GameIcon } from "@/components/shell/GameIcon";
 import { useGameIcons } from "@/hooks/useGameIcons";
 import { gameAvatar } from "@/lib/games";
+import { overrideSummary } from "@/lib/overrides";
 import { GroupLabel, SectionTitle } from "./controls";
 import { useSettings } from "./SettingsContext";
 
@@ -36,7 +38,7 @@ export function GamesSection() {
     <>
       <SectionTitle
         title="Games"
-        description="Recording starts automatically while an enabled game is running. Switches apply immediately."
+        description="Recording starts automatically while an enabled game is running. Switches apply immediately. Customize gives a game its own recording, video and audio settings."
       />
       <div className="space-y-2">
         {builtins.map((g) => (
@@ -62,6 +64,7 @@ export function GamesSection() {
               <GameBadge game={g} icon={icons[g.id]} />
               <Switch checked={g.enabled} onCheckedChange={(v) => setGameEnabled(g.id, v)} />
               <Input value={g.name} onChange={(e) => editCustom(g.id, { name: e.target.value })} className="flex-1" />
+              <CustomizeButton game={g} />
               <Button
                 variant="ghost"
                 size="icon"
@@ -71,6 +74,7 @@ export function GamesSection() {
                 <Trash2 />
               </Button>
             </div>
+            <OverrideSummary game={g} />
             <label className="block text-xs font-semibold uppercase text-muted-foreground">
               Executables (comma-separated)
               <Input
@@ -130,13 +134,36 @@ function GameCard(props: { game: GameProfile; icon?: string; note?: string; onTo
       <div className="min-w-0 flex-1">
         <div className="font-medium">{game.name}</div>
         {note && <div className="truncate text-sm text-muted-foreground">{note}</div>}
+        <OverrideSummary game={game} />
       </div>
+      <CustomizeButton game={game} />
       <Switch checked={game.enabled} onCheckedChange={onToggle} aria-label={`Record ${game.name}`} />
     </div>
   );
 }
 
-function GameBadge({ game, icon }: { game: GameProfile; icon?: string }) {
+function CustomizeButton({ game }: { game: GameProfile }) {
+  const navigate = useNavigate();
+  return (
+    <Button
+      variant="ghost"
+      size="sm"
+      aria-label={`Customize ${game.name}`}
+      onClick={() => navigate(`/settings/games/${encodeURIComponent(game.id)}`)}
+    >
+      <SlidersHorizontal /> Customize
+    </Button>
+  );
+}
+
+/** What a game does differently from the global settings, if anything. */
+function OverrideSummary({ game }: { game: GameProfile }) {
+  const summary = overrideSummary(game.overrides);
+  if (!summary) return null;
+  return <div className="truncate text-sm text-primary">{summary}</div>;
+}
+
+export function GameBadge({ game, icon }: { game: GameProfile; icon?: string }) {
   return (
     <span
       className="flex size-10 shrink-0 items-center justify-center rounded-2xl text-white"
