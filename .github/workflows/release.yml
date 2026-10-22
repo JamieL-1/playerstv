@@ -42,7 +42,7 @@ jobs:
         if: github.ref != 'refs/heads/main' && !inputs.dry_run
         run: throw "Releases are made from main (this run is on ${{ github.ref_name }}). Use dry run to test other branches."
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0 # tags, to check the new one doesn't exist yet
 
