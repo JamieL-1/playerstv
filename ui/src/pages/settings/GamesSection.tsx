@@ -54,8 +54,8 @@ export function GamesSection() {
 
       <GroupLabel>Custom games</GroupLabel>
       <p className="mb-3 text-sm text-muted-foreground">
-        Detected when the window title matches the pattern and belongs to one of the executables. Click Save to apply
-        changes here.
+        playerstv records a custom game when a window's title matches the pattern and the window belongs to one of the
+        executables. Click Save to apply changes here.
       </p>
       <div className="space-y-3">
         {customs.map((g) => (

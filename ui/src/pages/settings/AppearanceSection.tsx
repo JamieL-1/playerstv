@@ -32,7 +32,7 @@ export function AppearanceSection() {
 
   return (
     <>
-      <SectionTitle title="Appearance" description="Make playerstv yours. Changes apply straight away." />
+      <SectionTitle title="Appearance" description="Changes apply straight away." />
 
       <GroupLabel>Theme</GroupLabel>
       <div className="grid grid-cols-4 gap-3">

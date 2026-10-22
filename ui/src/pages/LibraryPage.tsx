@@ -107,7 +107,7 @@ export function LibraryPage() {
     body = <NothingRecorded config={config} kind={kind} gameName={game?.name} />;
   } else if (shown.length === 0) {
     body = (
-      <Empty icon={SearchX} title="Nothing matches your search" text={`No recordings with “${search}” in their name.`}>
+      <Empty icon={SearchX} title="Nothing matches your search" text={`No recordings with "${search}" in their name.`}>
         <Button variant="secondary" onClick={() => setSearch("")}>
           Clear search
         </Button>

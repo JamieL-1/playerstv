@@ -127,7 +127,7 @@ export function GameSettingsPage() {
           value={v.codec}
           options={CODECS.map((c) => ({
             value: c.value,
-            label: playable.has(c.value) ? c.label : `${c.label} — can't play on this PC`,
+            label: playable.has(c.value) ? c.label : `${c.label}, can't play on this PC`,
             disabled: !playable.has(c.value) && c.value !== v.codec,
           }))}
           defaultLabel={labelOf(CODECS, g.video.codec)}
