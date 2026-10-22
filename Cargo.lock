@@ -2673,21 +2673,22 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "chrono",
- "crossbeam-channel",
  "global-hotkey",
  "notify",
  "playerstv-capture",
  "playerstv-common",
  "playerstv-core",
+ "playerstv-tray",
  "serde",
  "serde_json",
- "tauri-winrt-notification",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-dialog",
+ "tauri-plugin-opener",
+ "tauri-plugin-single-instance",
  "tracing",
- "tracing-appender",
- "tracing-subscriber",
- "tray-icon 0.26.1",
+ "webview2-com",
  "windows",
- "winreg",
 ]
 
 [[package]]
@@ -2725,11 +2726,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "playerstv-ui"
+name = "playerstv-tray"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "chrono",
+ "crossbeam-channel",
  "global-hotkey",
  "notify",
  "playerstv-capture",
@@ -2737,14 +2739,13 @@ dependencies = [
  "playerstv-core",
  "serde",
  "serde_json",
- "tauri",
- "tauri-build",
- "tauri-plugin-dialog",
- "tauri-plugin-opener",
- "tauri-plugin-single-instance",
+ "tauri-winrt-notification",
  "tracing",
- "webview2-com",
+ "tracing-appender",
+ "tracing-subscriber",
+ "tray-icon 0.26.1",
  "windows",
+ "winreg",
 ]
 
 [[package]]

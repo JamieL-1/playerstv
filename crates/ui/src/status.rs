@@ -22,6 +22,30 @@ pub fn start_poller(app: AppHandle) {
         .expect("spawn status poller");
 }
 
+/// Closes the window when the tray quits (from its menu or [`quit_app`]).
+pub fn close_with_tray(app: AppHandle) {
+    let signal = match control::QuitSignal::open() {
+        Ok(s) => s,
+        Err(e) => return eprintln!("playerstv: no quit event: {e:#}"),
+    };
+    std::thread::Builder::new()
+        .name("quit-watcher".into())
+        .spawn(move || {
+            signal.wait();
+            app.exit(0);
+        })
+        .expect("spawn quit watcher");
+}
+
+/// Quits playerstv: the tray stops recording and exits, and the window
+/// closes with it (straight away if the tray isn't running).
+#[tauri::command]
+pub async fn quit_app(app: AppHandle) {
+    if control::request(Request::Quit).is_err() {
+        app.exit(0);
+    }
+}
+
 fn send(req: Request) -> Result<Snapshot, String> {
     control::request(req).map_err(|e| format!("{e:#}"))
 }
@@ -41,17 +65,18 @@ pub async fn toggle_session() -> Result<Snapshot, String> {
     send(Request::ToggleSession)
 }
 
-/// Starts the tray app (it sits next to this exe) when it isn't running.
+/// Starts the tray (this same exe, without opening another window) when it
+/// isn't running, e.g. after Quit from the tray menu.
 #[tauri::command]
 pub async fn start_tray() -> Result<(), String> {
     if control::tray_running() {
         return Ok(());
     }
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-    let tray = exe.with_file_name("playerstv.exe");
-    std::process::Command::new(&tray)
+    std::process::Command::new(&exe)
+        .arg(playerstv_tray::BACKGROUND_FLAG)
         .creation_flags(CREATE_NO_WINDOW)
         .spawn()
         .map(|_| ())
-        .map_err(|e| format!("couldn't start {}: {e}", tray.display()))
+        .map_err(|e| format!("couldn't start {}: {e}", exe.display()))
 }

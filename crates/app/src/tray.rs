@@ -31,6 +31,8 @@ enum AppEvent {
     Menu(MenuId),
     HotKey(u32),
     OpenWindow,
+    /// Quit from the window.
+    Quit,
     Supervisor(supervisor::Event),
     ConfigFileChanged,
 }
@@ -113,7 +115,8 @@ impl HotKeys {
     }
 }
 
-pub fn run(mut cfg: Config) -> Result<()> {
+/// Runs the tray until Quit; `show_window` also opens the window once it's up.
+pub fn run(mut cfg: Config, show_window: bool) -> Result<()> {
     let thread_id = unsafe { GetCurrentThreadId() };
     // Make sure this thread has a message queue before anyone posts to it.
     unsafe {
@@ -166,14 +169,19 @@ pub fn run(mut cfg: Config) -> Result<()> {
     let snapshot = Arc::new(Mutex::new(snapshot_of(&cfg, &Status::Waiting, None)));
     {
         let cmd_tx = cmd_tx.clone();
+        let post = post.clone();
         control::serve(snapshot.clone(), move |req| {
             let _ = cmd_tx.send(match req {
                 Request::SaveClip => Command::SaveClip,
                 Request::ToggleSession => Command::ToggleSession,
+                Request::Quit => return post(AppEvent::Quit),
                 Request::Status => return,
             });
         });
     }
+    // Set on the way out so the window closes with us.
+    let quit_signal = control::QuitSignal::open().context("creating quit event")?;
+    quit_signal.reset();
 
     // Config hot-reload: the settings window writes the file, we pick it up.
     let config_path = paths::config_file();
@@ -224,6 +232,9 @@ pub fn run(mut cfg: Config) -> Result<()> {
     hotkeys.register(&cfg);
     update_labels(&items, &cfg, &Status::Waiting);
     apply_autostart(&cfg);
+    if show_window {
+        open_window();
+    }
 
     // Ticks once a second to keep the "REC 12:34" labels current.
     let timer = unsafe { SetTimer(None, 0, 1000, None) };
@@ -262,6 +273,7 @@ pub fn run(mut cfg: Config) -> Result<()> {
                     }
                 }
                 AppEvent::OpenWindow => open_window(),
+                AppEvent::Quit => break 'outer,
                 AppEvent::Menu(id) => {
                     if id == *items.clip.id() {
                         let _ = cmd_tx.send(Command::SaveClip);
@@ -360,6 +372,7 @@ pub fn run(mut cfg: Config) -> Result<()> {
     }
 
     tracing::info!("shutting down");
+    quit_signal.set();
     unsafe {
         let _ = KillTimer(None, timer);
     }
@@ -453,20 +466,22 @@ fn status_icon(status: &Status) -> Icon {
     Icon::from_rgba(rgba, N, N).expect("valid icon")
 }
 
-fn toast(title: &str, text: &str) {
+/// A Windows notification (also used by the window).
+pub fn toast(title: &str, text: &str) {
     if let Err(e) = Toast::new(Toast::POWERSHELL_APP_ID).title(title).text1(text).show() {
         tracing::debug!("toast failed: {e}");
     }
 }
 
-/// Opens the app window (`playerstv-ui.exe`, shipped next to us). If it's
-/// already open it focuses itself (single-instance plugin).
-fn open_window() {
+/// Opens the app window: this same exe started with `--window`, in its own
+/// process so the window's memory is freed when it closes. If it's already
+/// open it focuses itself (single-instance plugin).
+pub fn open_window() {
     let ui = match std::env::current_exe() {
-        Ok(exe) => exe.with_file_name("playerstv-ui.exe"),
+        Ok(exe) => exe,
         Err(e) => return tracing::error!("couldn't find own exe: {e}"),
     };
-    if let Err(e) = std::process::Command::new(&ui).spawn() {
+    if let Err(e) = std::process::Command::new(&ui).arg(crate::WINDOW_FLAG).spawn() {
         tracing::error!("couldn't open {}: {e}", ui.display());
         toast("playerstv", &format!("Couldn't open the playerstv window ({}).", ui.display()));
     }

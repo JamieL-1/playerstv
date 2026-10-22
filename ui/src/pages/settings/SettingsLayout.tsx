@@ -1,7 +1,20 @@
-import { X } from "lucide-react";
+import { Power, X } from "lucide-react";
 import { useEffect } from "react";
 import { NavLink, Navigate, useNavigate, useParams } from "react-router";
+import { backend } from "@/api/backend";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
+import { useStatus } from "@/hooks/useStatus";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
 import { AppearanceSection } from "./AppearanceSection";
@@ -88,6 +101,9 @@ function SettingsScreen() {
               ))}
             </div>
           ))}
+          <div className="border-t border-border pt-2">
+            <QuitButton />
+          </div>
         </div>
       </nav>
       <div className="relative flex min-w-0 flex-1 bg-background">
@@ -112,6 +128,45 @@ function SettingsScreen() {
         <UnsavedBar />
       </div>
     </div>
+  );
+}
+
+/**
+ * Quits the whole app (tray included), like Discord's "Log Out" at the bottom
+ * of its settings. Closing the window only hides it; recording carries on.
+ */
+function QuitButton() {
+  const status = useStatus();
+  const session = status?.status.state === "recording" && status.status.session_since !== null;
+  return (
+    <AlertDialog>
+      <AlertDialogTrigger asChild>
+        <button
+          type="button"
+          className="flex w-full items-center justify-between rounded-md px-2.5 py-1.5 text-[15px] font-medium text-destructive hover:bg-accent"
+        >
+          Quit playerstv
+          <Power className="size-4" />
+        </button>
+      </AlertDialogTrigger>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>Quit playerstv?</AlertDialogTitle>
+          <AlertDialogDescription>
+            {session
+              ? "The full session in progress is saved, then recording stops."
+              : "Recording and the hotkeys stop."}{" "}
+            Open playerstv again to start recording.
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel>Cancel</AlertDialogCancel>
+          <AlertDialogAction variant="destructive" onClick={() => void backend.quitApp()}>
+            Quit
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
   );
 }
 

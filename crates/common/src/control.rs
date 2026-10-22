@@ -1,7 +1,8 @@
 //! Local control channel between the tray process and the playerstv window
-//! (`playerstv-ui.exe`): a named pipe speaking one line of text each way.
+//! (`playerstv.exe --window`): a named pipe speaking one line of text each way.
 //!
-//! Requests: `status`, `clip`, `session`. Every reply is a JSON [`Snapshot`].
+//! Requests: `status`, `clip`, `session`, `quit`. Every reply is a JSON
+//! [`Snapshot`].
 
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
@@ -66,6 +67,8 @@ pub enum Request {
     Status,
     SaveClip,
     ToggleSession,
+    /// Quit the tray (and with it the window, see [`QuitSignal`]).
+    Quit,
 }
 
 impl Request {
@@ -74,11 +77,61 @@ impl Request {
             Request::Status => "status",
             Request::SaveClip => "clip",
             Request::ToggleSession => "session",
+            Request::Quit => "quit",
         }
     }
 
     fn parse(s: &str) -> Option<Self> {
-        [Request::Status, Request::SaveClip, Request::ToggleSession].into_iter().find(|r| r.as_str() == s)
+        [Request::Status, Request::SaveClip, Request::ToggleSession, Request::Quit]
+            .into_iter()
+            .find(|r| r.as_str() == s)
+    }
+}
+
+/// A named event the tray sets as it quits, so an open window closes with
+/// it. A crashed tray never sets it, so the window stays and offers to start
+/// the tray again.
+pub struct QuitSignal(HANDLE);
+
+// A kernel event handle may be used from any thread.
+unsafe impl Send for QuitSignal {}
+unsafe impl Sync for QuitSignal {}
+
+impl QuitSignal {
+    pub fn open() -> Result<Self> {
+        use windows::Win32::System::Threading::CreateEventW;
+        // Manual reset: stays set for every waiting window.
+        let handle = unsafe { CreateEventW(None, true, false, &crate::paths::mutex_name("quit")) }?;
+        Ok(Self(handle))
+    }
+
+    /// Called by a starting tray: a window from before a quit mustn't close.
+    pub fn reset(&self) {
+        unsafe {
+            let _ = windows::Win32::System::Threading::ResetEvent(self.0);
+        }
+    }
+
+    pub fn set(&self) {
+        unsafe {
+            let _ = windows::Win32::System::Threading::SetEvent(self.0);
+        }
+    }
+
+    /// Blocks until the tray quits.
+    pub fn wait(&self) {
+        use windows::Win32::System::Threading::{WaitForSingleObject, INFINITE};
+        unsafe {
+            WaitForSingleObject(self.0, INFINITE);
+        }
+    }
+}
+
+impl Drop for QuitSignal {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = windows::Win32::Foundation::CloseHandle(self.0);
+        }
     }
 }
 

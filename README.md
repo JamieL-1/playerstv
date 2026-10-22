@@ -28,9 +28,14 @@ Measured on an RTX 5080 recording RuneLite at 1900×1030@60: ~0.5 % total CPU,
 
 ## The window
 
-Left-click the tray icon (or *Open playerstv*) for a Discord-style window. It's
-a separate process, `playerstv-ui.exe`, that only runs while the window is
-open, so recording costs nothing extra the rest of the time.
+Starting `playerstv.exe` opens a Discord-style window; closing it leaves
+playerstv recording from the tray, and left-clicking the tray icon (or *Open
+playerstv*) brings it back. The window is the same exe running as a second
+process (`playerstv.exe --window`) that only exists while the window is open,
+so recording costs nothing extra the rest of the time. The first time you
+close it, a notification says playerstv is still running. To exit
+completely, use *Quit* in the tray menu or *Quit playerstv* at the bottom of
+the window's settings; either closes the window and the tray together.
 
 - **Library**: a server rail with one icon per game, *All recordings / Clips /
   Sessions* with counts, and a thumbnail grid with search and sorting. It
@@ -93,7 +98,10 @@ no extra detail locally, though YouTube gives higher resolutions more bitrate.
 
 Grab `playerstv-vX.Y.Z-windows-x64.zip` from the
 [Releases](../../releases) page, unzip it anywhere and run `playerstv.exe`
-(it lives in the system tray). The zip includes FFmpeg. The app isn't
+FFmpeg is built into the exe and unpacked to
+`%LOCALAPPDATA%\playerstv\ffmpeg` on first run; nothing else needs
+installing (the WebView2 runtime the window uses ships with Windows 11 and
+most Windows 10 PCs, and playerstv offers the download if it's missing). The app isn't
 code-signed yet, so SmartScreen may ask: **More info → Run anyway**.
 
 ### Making a release
@@ -120,16 +128,22 @@ the run as an artifact.
 
 ```powershell
 powershell -File scripts/fetch-ffmpeg.ps1   # puts ffmpeg.exe in vendor/ffmpeg
-cd ui; npm ci; npm run build; cd ..         # the window's frontend (embedded in playerstv-ui.exe)
+cd ui; npm ci; npm run build; cd ..         # the window's frontend (embedded in playerstv.exe)
 cargo build --release
-target\release\playerstv.exe                # tray app; it starts playerstv-ui.exe for the window
+target\release\playerstv.exe                # tray + window
 ```
 
-For distribution, place `ffmpeg.exe` and `playerstv-ui.exe` next to
-`playerstv.exe` (`scripts/package.ps1` does this).
+Dev builds use `vendor/ffmpeg/ffmpeg.exe` (or an `ffmpeg.exe` next to the
+exe, which always wins). For distribution, build with
+`cargo build --release --features bundle-ffmpeg` to embed ffmpeg in the exe,
+then `scripts/package.ps1 -Version vX.Y.Z` zips it with a README for
+testers (`scripts/README-tester.txt`) and the licence notices.
 
 | Command | What it does |
 |---|---|
+| `playerstv` | Start the tray and open the window (if it's already running, just open the window) |
+| `playerstv --background` | Start the tray only (used by *Start with Windows*) |
+| `playerstv --window` | The window on its own; the tray starts it this way |
 | `playerstv --smoke 15` | Headless check: wait for the game, record 15 s, save a clip, print its path |
 
 ## Files
@@ -164,7 +178,7 @@ leftovers.
                                                                                      ▼
                           hotkey ──► stream-copy concat of newest segments ──► clip.mp4
 
- playerstv.exe (tray) ◄──control pipe: status / clip / session──► playerstv-ui.exe (window)
+ playerstv.exe (tray) ◄──control pipe: status / clip / session──► playerstv.exe --window
         ▲                                                           │  Tauri + WebView2
         └────────────── config.toml (both watch it) ────────────────┤  React frontend (ui/)
                                                                     ▼
@@ -181,8 +195,10 @@ leftovers.
   never stalls the audio track.
 - `crates/common` — paths, the control pipe and process helpers shared by the
   tray and the window.
-- `crates/app` — the tray app: tray, hotkeys, supervisor state machine.
-- `crates/ui` — the window's backend (Tauri 2): status, settings, library,
+- `crates/app` (`playerstv-tray`) — the tray as a library: tray, hotkeys,
+  supervisor state machine.
+- `crates/ui` (`playerstv`) — builds `playerstv.exe`: runs the tray, or with
+  `--window` the window's backend (Tauri 2): status, settings, library,
   thumbnails, trim exports.
 - `ui/` — the window's frontend: React, TypeScript, shadcn/ui on Tailwind,
   built with Vite+ (`vp`).
@@ -217,7 +233,7 @@ Dependabot opens weekly PRs for crate, npm and Actions updates. Formatting uses
 stays next to its value.
 
 **Window development with live reload**: run `npm run dev` in `ui/`, then
-`cargo run -p playerstv-ui --no-default-features` (without the default
+`cargo run -p playerstv --no-default-features -- --window` (without the default
 `custom-protocol` feature the window loads the Vite dev server instead of the
 embedded files). Any frontend change needs `npm run build` before a normal
 `cargo build` picks it up.
@@ -233,8 +249,10 @@ unfocused, so tests never pop up over a game:
 | `PLAYERSTV_UI_SCREENSHOT=out.png` | Save a screenshot (via WebView2) and exit |
 | `PLAYERSTV_UI_SETTLE_MS=2500` | How long to wait before the screenshot |
 
-Combine it with `PLAYERSTV_INSTANCE=test` and a `PLAYERSTV_CONFIG` whose games
-are all disabled. From Git Bash, set `MSYS_NO_PATHCONV=1` so routes aren't
+Set them for `playerstv.exe --window`, or for `playerstv.exe` to test the tray
+and window together (the window inherits them). Combine it with
+`PLAYERSTV_INSTANCE=test` and a `PLAYERSTV_CONFIG` whose games are all
+disabled. From Git Bash, set `MSYS_NO_PATHCONV=1` so routes aren't
 rewritten into paths.
 
 ## Diagnostics

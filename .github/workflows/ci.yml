@@ -24,7 +24,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # The window's frontend (ui/) is embedded in playerstv-ui.exe, so it's
+      # The window's frontend (ui/) is embedded in playerstv.exe, so it's
       # built before any Rust step compiles crates/ui.
       - uses: actions/setup-node@v4
         with:

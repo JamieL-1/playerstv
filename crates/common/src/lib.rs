@@ -1,5 +1,5 @@
-//! Windows plumbing shared by the tray app (`playerstv.exe`) and the UI
-//! (`playerstv-ui.exe`): file locations, the tray's control pipe and status
+//! Windows plumbing shared by the tray and the window (`playerstv.exe` and
+//! `playerstv.exe --window`): file locations, the tray's control pipe and status
 //! type, and child-process helpers.
 
 pub mod control;

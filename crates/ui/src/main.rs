@@ -1,9 +1,10 @@
 // No console window in release builds.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-//! playerstv-ui: the app window (library, player, clip editor, settings).
-//! Started by the tray app; talks to it over the control pipe and the
-//! config file (see `ptv_common`).
+//! playerstv.exe. Without arguments it runs the tray (crates/app), which
+//! opens the window by starting this exe again with `--window`. That process
+//! is the app window (library, player, clip editor, settings) and talks to
+//! the tray over the control pipe and the config file (see `ptv_common`).
 
 mod library;
 mod settings;
@@ -13,6 +14,26 @@ mod trim;
 mod window;
 
 fn main() {
+    #[cfg(feature = "bundle-ffmpeg")]
+    if let Err(e) =
+        ptv_common::paths::install_bundled_ffmpeg(include_bytes!(env!("PTV_FFMPEG_PATH")), env!("PTV_FFMPEG_KEY"))
+    {
+        // Logging isn't up yet; the tray logs which ffmpeg it ends up using.
+        eprintln!("playerstv: couldn't unpack ffmpeg: {e}");
+    }
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().map(String::as_str) == Some(playerstv_tray::WINDOW_FLAG) {
+        run_window();
+    } else {
+        playerstv_tray::main(&args);
+    }
+}
+
+fn run_window() {
+    if !window::webview2_available() {
+        window::explain_missing_webview2();
+        return;
+    }
     tauri::Builder::default()
         .manage(trim::Exports::default())
         // A second launch (e.g. clicking the tray icon again) focuses this
@@ -30,11 +51,18 @@ fn main() {
         .setup(|app| {
             window::create_main(app)?;
             status::start_poller(app.handle().clone());
+            status::close_with_tray(app.handle().clone());
             library::init(app.handle());
             settings::watch(app.handle().clone());
             Ok(())
         })
+        .on_window_event(|_, event| {
+            if let tauri::WindowEvent::CloseRequested { .. } = event {
+                window::first_close_hint();
+            }
+        })
         .invoke_handler(tauri::generate_handler![
+            status::quit_app,
             status::get_status,
             status::save_clip,
             status::toggle_session,
@@ -56,5 +84,5 @@ fn main() {
             trim::cancel_trim,
         ])
         .run(tauri::generate_context!())
-        .expect("error while running playerstv-ui");
+        .expect("error while running the playerstv window");
 }

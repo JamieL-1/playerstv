@@ -1,14 +1,18 @@
-// Release builds are a GUI-subsystem app (no console window); debug builds
-// keep the console for logs.
-#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+//! The tray side of `playerstv.exe`: game detection, recording, hotkeys and
+//! the tray icon. The same exe runs the window with `--window` (crates/ui).
 
 mod autostart;
-// Shared with playerstv-ui; re-exported so `crate::paths` etc. keep working.
+// Shared with the window; re-exported so `crate::paths` etc. keep working.
 pub use ptv_common::{control, paths};
 mod export;
 mod recorder;
 mod supervisor;
 mod tray;
+
+pub use autostart::BACKGROUND_FLAG;
+pub use tray::toast;
+/// Runs the app window instead of the tray (handled by the exe's `main`).
+pub const WINDOW_FLAG: &str = "--window";
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -19,14 +23,16 @@ use tracing_subscriber::EnvFilter;
 use windows::Win32::Foundation::{GetLastError, ERROR_ALREADY_EXISTS};
 use windows::Win32::System::Threading::CreateMutexW;
 
-fn main() {
-    let args: Vec<String> = std::env::args().skip(1).collect();
+/// Everything except `--window`: `--smoke N`, `--background` (tray only, as
+/// used by "Start with Windows"), or nothing (tray plus the window).
+pub fn main(args: &[String]) {
     let result = match args.first().map(String::as_str) {
         Some("--smoke") => {
             let secs = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(15);
             smoke(secs)
         }
-        _ => run_tray(),
+        Some(autostart::BACKGROUND_FLAG) => run_tray(false),
+        _ => run_tray(true),
     };
     if let Err(e) = result {
         tracing::error!("{e:#}");
@@ -35,20 +41,25 @@ fn main() {
     }
 }
 
-fn run_tray() -> Result<()> {
+fn run_tray(show_window: bool) -> Result<()> {
     let _guard = init_logging(false);
     // Named mutex: only one tray instance at a time. The handle stays open
     // (and the mutex held) until the process exits.
     unsafe {
         let _mutex = CreateMutexW(None, false, &paths::mutex_name("tray"))?;
         if GetLastError() == ERROR_ALREADY_EXISTS {
+            // Launching the app again means "show me the app".
             tracing::info!("already running");
+            if show_window {
+                tray::open_window();
+            }
             return Ok(());
         }
     }
     let cfg = Config::load_or_create(&paths::config_file())?;
     tracing::info!("playerstv {} starting, config {}", env!("CARGO_PKG_VERSION"), paths::config_file().display());
-    tray::run(cfg)
+    tracing::info!("using ffmpeg at {}", paths::ffmpeg_exe().display());
+    tray::run(cfg, show_window)
 }
 
 /// `playerstv --smoke N`: headless end-to-end check. Waits for the game,

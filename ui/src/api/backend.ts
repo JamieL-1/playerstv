@@ -9,6 +9,7 @@ export const backend = {
   saveClip: () => invoke<Snapshot>("save_clip"),
   toggleSession: () => invoke<Snapshot>("toggle_session"),
   startTray: () => invoke<void>("start_tray"),
+  quitApp: () => invoke<void>("quit_app"),
 
   getConfig: () => invoke<Config>("get_config"),
   saveConfig: (config: Config) => invoke<Config>("save_config", { config }),
