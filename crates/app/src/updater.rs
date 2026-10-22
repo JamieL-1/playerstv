@@ -22,7 +22,9 @@ use minisign_verify::{PublicKey, Signature};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
+use crate::control::UpdateState;
 use crate::paths;
+use crate::supervisor::unix_now;
 
 const MANIFEST_URL: &str = "https://github.com/JamieL-1/playerstv/releases/latest/download/latest.json";
 /// The release signing key (`scripts/sign-release.ps1` signs with its secret
@@ -62,24 +64,50 @@ fn manifest_url() -> String {
     std::env::var("PLAYERSTV_UPDATE_URL").unwrap_or_else(|_| MANIFEST_URL.to_owned())
 }
 
-/// Checks now and then every [`RECHECK`] while `allowed` (the `auto_update`
-/// setting) is on, and calls `on_ready` once with the first verified update.
-pub fn spawn(allowed: Arc<AtomicBool>, on_ready: impl FnOnce(Staged) + Send + 'static) {
-    let spawned = std::thread::Builder::new().name("updater".into()).spawn(move || loop {
-        if !allowed.load(Ordering::Relaxed) {
-            // Switching updates back on should take effect soon, not in hours.
-            std::thread::sleep(Duration::from_secs(60));
-            continue;
-        }
-        match check_and_stage() {
-            Ok(Some(staged)) => {
-                tracing::info!("update {} downloaded to {}", staged.version, staged.exe.display());
-                return on_ready(staged);
+/// Checks at start and then every [`RECHECK`] while `allowed` (the
+/// `auto_update` setting) is on, and whenever `check_now` receives (the
+/// "Check for updates" button, or updates being switched on), allowed or
+/// not. Every verified update goes to `on_ready`; `report` hears each step.
+/// Ends when `check_now`'s sender is dropped.
+pub fn spawn(
+    allowed: Arc<AtomicBool>,
+    check_now: crossbeam_channel::Receiver<()>,
+    report: impl Fn(UpdateState) + Send + 'static,
+    on_ready: impl Fn(Staged) + Send + 'static,
+) {
+    let spawned = std::thread::Builder::new().name("updater".into()).spawn(move || {
+        let mut check = allowed.load(Ordering::Relaxed);
+        loop {
+            if check {
+                report(UpdateState::Checking);
+                match check_and_stage(&report) {
+                    Ok(Some(staged)) => {
+                        tracing::info!("update {} downloaded to {}", staged.version, staged.exe.display());
+                        report(UpdateState::Ready { version: staged.version.clone() });
+                        on_ready(staged);
+                    }
+                    Ok(None) => report(UpdateState::UpToDate { checked_at: unix_now() }),
+                    Err(e) => {
+                        tracing::warn!("update check failed: {e:#}");
+                        report(UpdateState::Failed { error: format!("{e:#}"), at: unix_now() });
+                    }
+                }
             }
-            Ok(None) => {}
-            Err(e) => tracing::warn!("update check failed: {e:#}"),
+            let woken = if allowed.load(Ordering::Relaxed) {
+                match check_now.recv_timeout(RECHECK) {
+                    Ok(()) => true,
+                    Err(crossbeam_channel::RecvTimeoutError::Timeout) => false,
+                    Err(crossbeam_channel::RecvTimeoutError::Disconnected) => return,
+                }
+            } else if check_now.recv().is_ok() {
+                true
+            } else {
+                return;
+            };
+            // Several clicks while a check ran make one more check, not many.
+            while check_now.try_recv().is_ok() {}
+            check = woken || allowed.load(Ordering::Relaxed);
         }
-        std::thread::sleep(RECHECK);
     });
     if let Err(e) = spawned {
         tracing::error!("couldn't start the updater: {e}");
@@ -95,7 +123,7 @@ fn agent(timeout: Duration) -> ureq::Agent {
         .new_agent()
 }
 
-fn check_and_stage() -> Result<Option<Staged>> {
+fn check_and_stage(report: &impl Fn(UpdateState)) -> Result<Option<Staged>> {
     let url = manifest_url();
     let manifest: Manifest = agent(Duration::from_secs(30))
         .get(&url)
@@ -109,6 +137,7 @@ fn check_and_stage() -> Result<Option<Staged>> {
         return Ok(None);
     }
     tracing::info!("downloading update {}", manifest.version);
+    report(UpdateState::Downloading { version: manifest.version.clone() });
     stage(&manifest, &paths::update_dir()).map(Some)
 }
 

@@ -9,8 +9,9 @@ export function sameJson(a: unknown, b: unknown): boolean {
  * config.toml changed on disk (tray menu, another window…) while the
  * settings form is open. Without unsaved edits, just take the new config.
  * With unsaved edits, keep them, but take the fields that are saved
- * instantly elsewhere (game switches, appearance) so a later Save can't
- * undo them.
+ * instantly elsewhere (game switches, appearance, the close dialog's
+ * "Don't ask again") so a later Save can't undo them. A close action
+ * edited here but not saved yet stays as edited.
  */
 export function mergeExternalChange(draft: Config, saved: Config, incoming: Config): Config {
   if (sameJson(draft, saved)) return incoming;
@@ -19,20 +20,26 @@ export function mergeExternalChange(draft: Config, saved: Config, incoming: Conf
     ...draft,
     games: draft.games.map((g) => (enabled.has(g.id) ? { ...g, enabled: enabled.get(g.id)! } : g)),
     ui: incoming.ui,
+    close_action: draft.close_action === saved.close_action ? incoming.close_action : draft.close_action,
   };
 }
 
 /**
- * "Restore default settings": factory recording, video, audio, hotkey and
- * storage settings, and no per-game customizations. Keeps what would hurt
- * to lose: the games themselves (custom ones, on/off switches), the output
- * folder (the library reads it) and the appearance.
+ * "Restore default recording settings": factory recording, video, audio,
+ * hotkey and storage settings, and no per-game customizations. Keeps what
+ * would hurt to lose: the games themselves (custom ones, on/off switches),
+ * the output folder (the library reads it), the appearance, and the app
+ * settings (General, Updates), which aren't recording settings.
  */
 export function restoreDefaults(current: Config, defaults: Config): Config {
   return {
     ...defaults,
     output_dir: current.output_dir,
     ui: current.ui,
+    start_with_windows: current.start_with_windows,
+    notifications: current.notifications,
+    auto_update: current.auto_update,
+    close_action: current.close_action,
     games: current.games.map((g) => {
       const kept = { ...g };
       delete kept.overrides;

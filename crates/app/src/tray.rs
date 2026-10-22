@@ -23,7 +23,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     PM_NOREMOVE, WM_APP, WM_TIMER,
 };
 
-use crate::control::{self, Request, Snapshot};
+use crate::control::{self, Request, Snapshot, UpdateState};
 use crate::supervisor::{self, unix_now, Command, Status, Supervisor};
 use crate::updater::{self, Staged};
 use crate::{autostart, paths};
@@ -43,9 +43,12 @@ enum AppEvent {
     Quit,
     /// "Restart to update" from the window.
     Restart,
+    /// "Check for updates" from the window.
+    CheckUpdate,
     Supervisor(supervisor::Event),
     ConfigFileChanged,
     UpdateReady(Staged),
+    UpdateState(UpdateState),
 }
 
 struct Items {
@@ -177,7 +180,7 @@ pub fn run(mut cfg: Config, show_window: bool) -> Result<()> {
     let sup_thread = std::thread::Builder::new().name("supervisor".into()).spawn(move || sup.run(cmd_rx))?;
 
     // The playerstv window reads status and sends commands over this.
-    let snapshot = Arc::new(Mutex::new(snapshot_of(&cfg, &Status::Waiting, None, None)));
+    let snapshot = Arc::new(Mutex::new(snapshot_of(&cfg, &Status::Waiting, None, None, &UpdateState::Idle)));
     // When the window last polled for status: it's open if that was recent.
     let window_polled = Arc::new(AtomicU64::new(0));
     {
@@ -190,6 +193,7 @@ pub fn run(mut cfg: Config, show_window: bool) -> Result<()> {
                 Request::ToggleSession => Command::ToggleSession,
                 Request::Quit => return post(AppEvent::Quit),
                 Request::Restart => return post(AppEvent::Restart),
+                Request::CheckUpdate => return post(AppEvent::CheckUpdate),
                 Request::Status => return window_polled.store(unix_now(), Ordering::Relaxed),
             });
         });
@@ -254,9 +258,19 @@ pub fn run(mut cfg: Config, show_window: bool) -> Result<()> {
     }
 
     let updates_allowed = Arc::new(AtomicBool::new(cfg.auto_update));
+    // Wakes the updater for a check now; dropped (ending it) on the way out.
+    let (check_update, check_update_rx) = crossbeam_channel::unbounded::<()>();
+    let mut update_state = UpdateState::Unavailable;
     if updater::enabled() {
-        let post = post.clone();
-        updater::spawn(updates_allowed.clone(), move |staged| post(AppEvent::UpdateReady(staged)));
+        update_state = UpdateState::Idle;
+        let report = post.clone();
+        let ready = post.clone();
+        updater::spawn(
+            updates_allowed.clone(),
+            check_update_rx,
+            move |s| report(AppEvent::UpdateState(s)),
+            move |staged| ready(AppEvent::UpdateReady(staged)),
+        );
     }
     // A downloaded update: installed when nothing is recording and the window
     // is closed (then playerstv restarts by itself), on "Restart to update",
@@ -324,9 +338,20 @@ pub fn run(mut cfg: Config, show_window: bool) -> Result<()> {
                         break 'outer;
                     }
                     toast("Update failed", "Couldn't install the update (see the log). playerstv keeps running.");
+                    update_state = UpdateState::Failed {
+                        error: "Couldn't install the update (see the log)".into(),
+                        at: unix_now(),
+                    };
                 }
                 AppEvent::Restart => {}
+                AppEvent::CheckUpdate => {
+                    if update_state != UpdateState::Unavailable && check_update.send(()).is_ok() {
+                        // Shown straight away; the updater reports from here.
+                        update_state = UpdateState::Checking;
+                    }
+                }
                 AppEvent::UpdateReady(staged) => pending_update = Some(staged),
+                AppEvent::UpdateState(s) => update_state = s,
                 AppEvent::Menu(id) => {
                     if id == *items.clip.id() {
                         let _ = cmd_tx.send(Command::SaveClip);
@@ -417,6 +442,11 @@ pub fn run(mut cfg: Config, show_window: bool) -> Result<()> {
                             updates_allowed.store(new.auto_update, Ordering::Relaxed);
                             if !new.auto_update && pending_update.take().is_some() {
                                 tracing::info!("updates turned off; not installing the downloaded update");
+                                update_state = UpdateState::Idle;
+                            }
+                            if new.auto_update && !cfg.auto_update {
+                                // Switched back on: check now, not in hours.
+                                let _ = check_update.send(());
                             }
                             cfg = new;
                             update_labels(&items, &cfg, &status);
@@ -428,11 +458,12 @@ pub fn run(mut cfg: Config, show_window: bool) -> Result<()> {
                 }
             }
         }
-        let update_ready = pending_update.as_ref().map(|u| u.version.clone());
-        *snapshot.lock().unwrap() = snapshot_of(&cfg, &status, last_saved.clone(), update_ready);
+        *snapshot.lock().unwrap() =
+            snapshot_of(&cfg, &status, last_saved.clone(), pending_update.as_ref(), &update_state);
     }
 
     tracing::info!("shutting down");
+    drop(check_update);
     quit_signal.set();
     unsafe {
         let _ = KillTimer(None, timer);
@@ -463,7 +494,13 @@ fn install_update(pending: &mut Option<Staged>) -> bool {
     }
 }
 
-fn snapshot_of(cfg: &Config, status: &Status, last_saved: Option<PathBuf>, update_ready: Option<String>) -> Snapshot {
+fn snapshot_of(
+    cfg: &Config,
+    status: &Status,
+    last_saved: Option<PathBuf>,
+    update_ready: Option<&Staged>,
+    update: &UpdateState,
+) -> Snapshot {
     Snapshot {
         status: status.clone(),
         buffer_seconds: status.buffer_seconds_or(cfg.buffer_seconds),
@@ -471,7 +508,8 @@ fn snapshot_of(cfg: &Config, status: &Status, last_saved: Option<PathBuf>, updat
         session_hotkey: cfg.session_hotkey.clone(),
         output_dir: cfg.output_dir.clone(),
         last_saved,
-        update_ready,
+        update_ready: update_ready.map(|u| u.version.clone()),
+        update: update.clone(),
     }
 }
 

@@ -2,7 +2,7 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import type { Config, ExportDone, Recording, Snapshot, UiConfig } from "./types";
+import type { CloseAction, Config, ExportDone, Recording, Snapshot, UiConfig } from "./types";
 
 export const backend = {
   getStatus: () => invoke<Snapshot | null>("get_status"),
@@ -11,12 +11,17 @@ export const backend = {
   restartToUpdate: () => invoke<Snapshot>("restart_to_update"),
   startTray: () => invoke<void>("start_tray"),
   quitApp: () => invoke<void>("quit_app"),
+  /** Closes the window; the tray keeps recording. */
+  closeToTray: () => invoke<void>("close_to_tray"),
+  appVersion: () => invoke<string>("app_version"),
+  checkForUpdates: () => invoke<Snapshot>("check_for_updates"),
 
   getConfig: () => invoke<Config>("get_config"),
   saveConfig: (config: Config) => invoke<Config>("save_config", { config }),
   defaultConfig: () => invoke<Config>("default_config"),
   setGameEnabled: (id: string, enabled: boolean) => invoke<void>("set_game_enabled", { id, enabled }),
   setUiConfig: (ui: UiConfig) => invoke<UiConfig>("set_ui_config", { ui }),
+  setCloseAction: (action: CloseAction) => invoke<void>("set_close_action", { action }),
   validateHotkey: (hotkey: string) => invoke<boolean>("validate_hotkey", { hotkey }),
   listMics: () => invoke<string[]>("list_mics"),
   pickFolder: (start?: string) => invoke<string | null>("pick_folder", { start: start ?? null }),
@@ -39,6 +44,8 @@ export const events = {
     listen<Snapshot | null>("status", (e) => cb(e.payload)),
   onConfigChanged: (cb: (c: Config) => void): Promise<UnlistenFn> =>
     listen<Config>("config-changed", (e) => cb(e.payload)),
+  /** The close button was clicked and `close_action` is "ask". */
+  onCloseRequested: (cb: () => void): Promise<UnlistenFn> => listen("close-requested", () => cb()),
   onLibraryChanged: (cb: () => void): Promise<UnlistenFn> => listen("library-changed", () => cb()),
   onThumbnailReady: (cb: (t: { path: string; thumb: string }) => void): Promise<UnlistenFn> =>
     listen<{ path: string; thumb: string }>("thumbnail-ready", (e) => cb(e.payload)),

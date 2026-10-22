@@ -5,7 +5,9 @@ use std::os::windows::process::CommandExt;
 use std::time::Duration;
 
 use ptv_common::control::{self, Request, Snapshot};
+use ptv_common::paths;
 use ptv_common::process::CREATE_NO_WINDOW;
+use ptv_core::config::{CloseAction, Config};
 use tauri::{AppHandle, Emitter};
 
 const POLL: Duration = Duration::from_millis(500);
@@ -37,6 +39,26 @@ pub fn close_with_tray(app: AppHandle) {
         .expect("spawn quit watcher");
 }
 
+/// The window's close button, as the `close_action` setting says: quit
+/// playerstv, close just the window (the tray keeps recording), or ask (the
+/// page shows a dialog on `close-requested`, then calls [`quit_app`] or
+/// [`close_to_tray`]). Without a tray there's nothing to keep, so it closes.
+pub fn close_requested(window: &tauri::Window, api: &tauri::CloseRequestApi) {
+    let action = Config::load_or_create(&paths::config_file()).map(|c| c.close_action).unwrap_or_default();
+    match action {
+        // Sent before the window goes, so the process can't exit first.
+        CloseAction::Quit => {
+            let _ = control::request(Request::Quit);
+        }
+        CloseAction::Tray => {}
+        CloseAction::Ask if !control::tray_running() => {}
+        CloseAction::Ask => {
+            api.prevent_close();
+            let _ = window.emit("close-requested", ());
+        }
+    }
+}
+
 /// Quits playerstv: the tray stops recording and exits, and the window
 /// closes with it (straight away if the tray isn't running).
 #[tauri::command]
@@ -44,6 +66,25 @@ pub async fn quit_app(app: AppHandle) {
     if control::request(Request::Quit).is_err() {
         app.exit(0);
     }
+}
+
+/// Closes the window and leaves the tray running. `destroy` skips
+/// [`close_requested`], which would only ask again.
+#[tauri::command]
+pub async fn close_to_tray(window: tauri::Window) -> Result<(), String> {
+    window.destroy().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn app_version() -> &'static str {
+    env!("CARGO_PKG_VERSION")
+}
+
+/// "Check for updates": the tray checks now; progress shows up in the
+/// snapshot's `update`.
+#[tauri::command]
+pub async fn check_for_updates() -> Result<Snapshot, String> {
+    send(Request::CheckUpdate)
 }
 
 fn send(req: Request) -> Result<Snapshot, String> {

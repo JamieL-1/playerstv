@@ -77,6 +77,9 @@ export interface UiConfig {
   gradient: Gradient | null;
 }
 
+/** What the window's close button does (`ask` shows a dialog each time). */
+export type CloseAction = "ask" | "tray" | "quit";
+
 export interface Config {
   buffer_seconds: number;
   clip_hotkey: string;
@@ -86,6 +89,7 @@ export interface Config {
   start_with_windows: boolean;
   notifications: boolean;
   auto_update: boolean;
+  close_action: CloseAction;
   storage_limit_gb: number | null;
   video: VideoConfig;
   audio: AudioConfig;
@@ -95,7 +99,14 @@ export interface Config {
 
 export type Status =
   | { state: "waiting" }
-  | { state: "recording"; game: string; since: number; session_since: number | null; video: string; buffer_seconds: number }
+  | {
+      state: "recording";
+      game: string;
+      since: number;
+      session_since: number | null;
+      video: string;
+      buffer_seconds: number;
+    }
   | { state: "failing"; game: string; error: string };
 
 /** What the tray reports; `null` when the tray app isn't running. */
@@ -108,7 +119,18 @@ export interface Snapshot {
   last_saved: string | null;
   /** Version of a downloaded update that a restart would install. */
   update_ready: string | null;
+  update: UpdateState;
 }
+
+/** The tray's updater (crates/common/src/control.rs). Times are Unix seconds. */
+export type UpdateState =
+  | { state: "unavailable" }
+  | { state: "idle" }
+  | { state: "checking" }
+  | { state: "up_to_date"; checked_at: number }
+  | { state: "downloading"; version: string }
+  | { state: "ready"; version: string }
+  | { state: "failed"; error: string; at: number };
 
 /** Ranges shared with crates/core/src/config.rs (sanitize). */
 export const LIMITS = {

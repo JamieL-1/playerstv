@@ -1,8 +1,8 @@
 //! Local control channel between the tray process and the playerstv window
 //! (`playerstv.exe --window`): a named pipe speaking one line of text each way.
 //!
-//! Requests: `status`, `clip`, `session`, `quit`, `restart`. Every reply is a JSON
-//! [`Snapshot`].
+//! Requests: `status`, `clip`, `session`, `quit`, `restart`, `check-update`.
+//! Every reply is a JSON [`Snapshot`].
 
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
@@ -63,6 +63,35 @@ pub struct Snapshot {
     /// Version of a downloaded update that a restart would install.
     #[serde(default)]
     pub update_ready: Option<String>,
+    /// What the updater is doing, for Settings → Updates.
+    #[serde(default)]
+    pub update: UpdateState,
+}
+
+/// The tray's updater, as Settings → Updates shows it. Times are Unix seconds.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum UpdateState {
+    /// This build doesn't update itself (dev builds, `PLAYERSTV_INSTANCE`).
+    Unavailable,
+    /// Not checked yet since the tray started.
+    #[default]
+    Idle,
+    Checking,
+    UpToDate {
+        checked_at: u64,
+    },
+    Downloading {
+        version: String,
+    },
+    /// Downloaded and verified; installs on restart.
+    Ready {
+        version: String,
+    },
+    Failed {
+        error: String,
+        at: u64,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -74,6 +103,8 @@ pub enum Request {
     Quit,
     /// Install the downloaded update and start playerstv again.
     Restart,
+    /// Check for an update now (and download it if there is one).
+    CheckUpdate,
 }
 
 impl Request {
@@ -84,13 +115,21 @@ impl Request {
             Request::ToggleSession => "session",
             Request::Quit => "quit",
             Request::Restart => "restart",
+            Request::CheckUpdate => "check-update",
         }
     }
 
     fn parse(s: &str) -> Option<Self> {
-        [Request::Status, Request::SaveClip, Request::ToggleSession, Request::Quit, Request::Restart]
-            .into_iter()
-            .find(|r| r.as_str() == s)
+        [
+            Request::Status,
+            Request::SaveClip,
+            Request::ToggleSession,
+            Request::Quit,
+            Request::Restart,
+            Request::CheckUpdate,
+        ]
+        .into_iter()
+        .find(|r| r.as_str() == s)
     }
 }
 
@@ -250,6 +289,7 @@ mod tests {
             output_dir: PathBuf::from("out"),
             last_saved: None,
             update_ready: None,
+            update: UpdateState::default(),
         }));
         let clips = Arc::new(AtomicUsize::new(0));
         {

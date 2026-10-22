@@ -32,8 +32,11 @@ missing.
 
 ## Using it
 
-Closing the window quits playerstv. To record without the window, turn on
-*Start with Windows* or run `playerstv.exe --background`.
+When you close the window, playerstv asks whether to minimize to the tray
+(recording and the hotkeys keep working) or quit. Tick *Don't ask again* to
+keep the choice, and change it later in *Settings → General*. To start
+without the window, turn on *Start with Windows* or run
+`playerstv.exe --background`.
 
 In the player, `Space` or `K` plays and pauses, `J`/`L` skip 10 s, the arrow
 keys skip 5 s, `,`/`.` step one frame and `F` toggles full screen. In the trim
@@ -51,7 +54,8 @@ about 2.5× bigger.
 then downloads it in the background. It installs the update when nothing is
 recording, when you click **Restart** on the update banner, or when you quit.
 It rejects a download that doesn't match the SHA-256 and minisign signature in
-`latest.json`. Turn it off with *Settings → Update automatically*.
+`latest.json`. *Settings → Updates* shows the version, has a **Check for
+updates** button, and turns automatic updates off.
 
 ## Files
 

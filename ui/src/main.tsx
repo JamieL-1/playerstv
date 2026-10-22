@@ -3,6 +3,7 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { createHashRouter, RouterProvider } from "react-router";
 import { AppShell } from "@/components/shell/AppShell";
+import { CloseDialog } from "@/components/shell/CloseDialog";
 import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { LibraryPage } from "@/pages/LibraryPage";
@@ -44,6 +45,7 @@ createRoot(document.getElementById("root")!).render(
         <TooltipProvider delayDuration={200}>
           <RouterProvider router={router} />
           <ThemedToaster />
+          <CloseDialog />
         </TooltipProvider>
       </ThemeProvider>
     </QueryClientProvider>
