@@ -57,29 +57,6 @@ pub fn create_main(app: &App) -> tauri::Result<()> {
     Ok(())
 }
 
-/// The first time the window is closed while the tray is recording, says
-/// that playerstv is still running (closing the window doesn't quit it).
-pub fn first_close_hint() {
-    let marker = ptv_common::paths::close_hint_marker();
-    if marker.exists() || !ptv_common::control::tray_running() {
-        return;
-    }
-    let notifications = ptv_core::config::Config::load_or_create(&ptv_common::paths::config_file())
-        .map(|c| c.notifications)
-        .unwrap_or(true);
-    // Tests record the marker without a notification popping up on screen.
-    if notifications && test_mode().is_none() {
-        playerstv_tray::toast(
-            "playerstv is still running",
-            "It keeps recording in the tray. Click the tray icon to open it again, or right-click it > Quit to exit.",
-        );
-    }
-    if let Some(dir) = marker.parent() {
-        let _ = std::fs::create_dir_all(dir);
-    }
-    let _ = std::fs::write(&marker, b"");
-}
-
 /// Whether the Edge WebView2 runtime the window draws with is installed
 /// (always on Windows 11; usually, but not always, on Windows 10).
 pub fn webview2_available() -> bool {

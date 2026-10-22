@@ -2672,6 +2672,7 @@ name = "playerstv"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "base64 0.22.1",
  "chrono",
  "global-hotkey",
  "notify",
@@ -2679,6 +2680,7 @@ dependencies = [
  "playerstv-common",
  "playerstv-core",
  "playerstv-tray",
+ "png",
  "serde",
  "serde_json",
  "tauri",
@@ -2689,6 +2691,7 @@ dependencies = [
  "tracing",
  "webview2-com",
  "windows",
+ "winreg",
 ]
 
 [[package]]

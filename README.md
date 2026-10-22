@@ -28,14 +28,13 @@ Measured on an RTX 5080 recording RuneLite at 1900×1030@60: ~0.5 % total CPU,
 
 ## The window
 
-Starting `playerstv.exe` opens a Discord-style window; closing it leaves
-playerstv recording from the tray, and left-clicking the tray icon (or *Open
-playerstv*) brings it back. The window is the same exe running as a second
-process (`playerstv.exe --window`) that only exists while the window is open,
-so recording costs nothing extra the rest of the time. The first time you
-close it, a notification says playerstv is still running. To exit
-completely, use *Quit* in the tray menu or *Quit playerstv* at the bottom of
-the window's settings; either closes the window and the tray together.
+Starting `playerstv.exe` opens a Discord-style window; left-clicking the tray
+icon (or *Open playerstv*) opens it too. The window is the same exe running as
+a second process (`playerstv.exe --window`). Closing the window quits
+playerstv, tray included, as do *Quit* in the tray menu and *Quit playerstv*
+at the bottom of the window's settings. To record in the background without
+the window, use *Start with Windows* (it starts the tray only) or run
+`playerstv.exe --background`.
 
 - **Library**: a server rail with one icon per game, *All recordings / Clips /
   Sessions* with counts, and a thumbnail grid with search and sorting. It

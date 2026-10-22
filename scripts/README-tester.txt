@@ -11,11 +11,11 @@ RUNNING IT
 2. Double-click playerstv.exe.
    Windows may say "Windows protected your PC" because the app isn't signed:
    click "More info", then "Run anyway".
-3. The playerstv window opens. Closing it does NOT quit: playerstv keeps
-   recording from the system tray (bottom-right, near the clock; it may be
-   under the ^ arrow). Left-click the tray icon to open the window again.
-4. To exit completely: right-click the tray icon > Quit, or use
-   "Quit playerstv" at the bottom of the window's settings.
+3. The playerstv window opens, and a playerstv icon appears in the system
+   tray (bottom-right, near the clock; it may be under the ^ arrow).
+   Left-click the tray icon to open the window if you can't see it.
+4. Closing the window quits playerstv completely, as do right-click the tray
+   icon > Quit and "Quit playerstv" at the bottom of the window's settings.
 
 The first start takes a few seconds longer while it unpacks its video tools.
 
