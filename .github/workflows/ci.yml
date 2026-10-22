@@ -22,7 +22,7 @@ jobs:
     name: Format, lint, test
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # The window's frontend (ui/) is embedded in playerstv.exe, so it's
       # built before any Rust step compiles crates/ui.
@@ -60,7 +60,7 @@ jobs:
     # Only reads Cargo.lock, so the cheaper Linux runner is fine.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: taiki-e/install-action@v2
         with:
