@@ -6,6 +6,7 @@
 //! is the app window (library, player, clip editor, settings) and talks to
 //! the tray over the control pipe and the config file (see `ptv_common`).
 
+mod icons;
 mod library;
 mod settings;
 mod status;
@@ -58,7 +59,9 @@ fn run_window() {
         })
         .on_window_event(|_, event| {
             if let tauri::WindowEvent::CloseRequested { .. } = event {
-                window::first_close_hint();
+                // Closing the window quits playerstv, tray included. Sent
+                // before the window goes, so the process can't exit first.
+                let _ = ptv_common::control::request(ptv_common::control::Request::Quit);
             }
         })
         .invoke_handler(tauri::generate_handler![
@@ -75,6 +78,8 @@ fn run_window() {
             settings::storage_usage,
             settings::list_mics,
             settings::pick_folder,
+            icons::game_icons,
+            icons::add_game,
             library::list_recordings,
             library::delete_recording,
             library::show_in_explorer,

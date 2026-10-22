@@ -3,6 +3,8 @@ import { BUILTIN_GAME_IDS, type GameProfile } from "@/api/types";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
+import { GameIcon } from "@/components/shell/GameIcon";
+import { useGameIcons } from "@/hooks/useGameIcons";
 import { gameAvatar } from "@/lib/games";
 import { GroupLabel, SectionTitle } from "./controls";
 import { useSettings } from "./SettingsContext";
@@ -24,6 +26,7 @@ function uniqueCustomId(name: string, used: Set<string>): string {
 
 export function GamesSection() {
   const { draft, update, setGameEnabled } = useSettings();
+  const icons = useGameIcons(draft.games);
   const builtins = draft.games.filter(isBuiltin);
   const customs = draft.games.filter((g) => !isBuiltin(g));
   const editCustom = (id: string, patch: Partial<GameProfile>) =>
@@ -37,7 +40,13 @@ export function GamesSection() {
       />
       <div className="space-y-2">
         {builtins.map((g) => (
-          <GameCard key={g.id} game={g} note={NOTES[g.id]} onToggle={(v) => setGameEnabled(g.id, v)} />
+          <GameCard
+            key={g.id}
+            game={g}
+            icon={icons[g.id]}
+            note={NOTES[g.id]}
+            onToggle={(v) => setGameEnabled(g.id, v)}
+          />
         ))}
       </div>
 
@@ -50,6 +59,7 @@ export function GamesSection() {
         {customs.map((g) => (
           <div key={g.id} className="space-y-3 rounded-lg bg-card p-4">
             <div className="flex items-center gap-3">
+              <GameBadge game={g} icon={icons[g.id]} />
               <Switch checked={g.enabled} onCheckedChange={(v) => setGameEnabled(g.id, v)} />
               <Input value={g.name} onChange={(e) => editCustom(g.id, { name: e.target.value })} className="flex-1" />
               <Button
@@ -112,21 +122,27 @@ export function GamesSection() {
   );
 }
 
-function GameCard({ game, note, onToggle }: { game: GameProfile; note?: string; onToggle: (v: boolean) => void }) {
-  const avatar = gameAvatar(game);
+function GameCard(props: { game: GameProfile; icon?: string; note?: string; onToggle: (v: boolean) => void }) {
+  const { game, icon, note, onToggle } = props;
   return (
     <div className="flex items-center gap-4 rounded-lg bg-card p-3">
-      <span
-        className="flex size-10 shrink-0 items-center justify-center rounded-2xl text-sm font-semibold text-white"
-        style={{ background: avatar.colour }}
-      >
-        {avatar.initials}
-      </span>
+      <GameBadge game={game} icon={icon} />
       <div className="min-w-0 flex-1">
         <div className="font-medium">{game.name}</div>
         {note && <div className="truncate text-sm text-muted-foreground">{note}</div>}
       </div>
       <Switch checked={game.enabled} onCheckedChange={onToggle} aria-label={`Record ${game.name}`} />
     </div>
+  );
+}
+
+function GameBadge({ game, icon }: { game: GameProfile; icon?: string }) {
+  return (
+    <span
+      className="flex size-10 shrink-0 items-center justify-center rounded-2xl text-white"
+      style={{ background: icon ? "var(--background)" : gameAvatar(game).colour }}
+    >
+      <GameIcon game={game} icon={icon} className="size-7" />
+    </span>
   );
 }

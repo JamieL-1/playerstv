@@ -18,6 +18,9 @@ export const backend = {
   validateHotkey: (hotkey: string) => invoke<boolean>("validate_hotkey", { hotkey }),
   listMics: () => invoke<string[]>("list_mics"),
   pickFolder: (start?: string) => invoke<string | null>("pick_folder", { start: start ?? null }),
+  gameIcons: () => invoke<Record<string, string>>("game_icons"),
+  /** Picks an exe and adds it as a custom game; its id, or null if cancelled. */
+  addGame: () => invoke<string | null>("add_game"),
   storageUsage: (dir: string) => invoke<{ bytes: number; files: number }>("storage_usage", { dir }),
 
   listRecordings: () => invoke<Recording[]>("list_recordings"),

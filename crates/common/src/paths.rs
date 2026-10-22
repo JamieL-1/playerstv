@@ -45,10 +45,9 @@ pub fn thumbs_dir() -> PathBuf {
     env_dir("LOCALAPPDATA").join(instance_name("thumbs"))
 }
 
-/// Exists once the window has explained (on its first close) that
-/// playerstv keeps running in the tray.
-pub fn close_hint_marker() -> PathBuf {
-    env_dir("LOCALAPPDATA").join(instance_name("close-hint-shown"))
+/// The app window's cache of game icons, one PNG per game id.
+pub fn icons_dir() -> PathBuf {
+    env_dir("LOCALAPPDATA").join(instance_name("icons"))
 }
 
 pub fn log_dir() -> PathBuf {
