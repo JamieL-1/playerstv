@@ -34,12 +34,20 @@ pub fn create_main(app: &App) -> tauri::Result<()> {
                 Some(route) => builder.initialization_script(format!("window.__PTV_TEST_ROUTE__ = '{route}';")),
                 None => builder,
             };
+            let builder = match &test.eval {
+                // Inlined rather than eval'd: the CSP blocks eval, but not
+                // initialization scripts.
+                Some(js) => builder.initialization_script(format!(
+                    "window.addEventListener('load', () => setTimeout(() => {{\n{js}\n}}, 500));"
+                )),
+                None => builder,
+            };
             let window = builder.build()?;
             window.set_position(tauri::PhysicalPosition::new(-6000, -6000))?;
             show_without_activating(&window);
             eprintln!("playerstv-ui test mode: route={:?} position={:?}", test.route, window.outer_position().ok());
             if let Some(path) = test.screenshot {
-                screenshot_then_exit(app.handle().clone(), window, path);
+                screenshot_then_exit(app.handle().clone(), window, path, test.settle);
             }
         }
         None => {
@@ -62,15 +70,22 @@ fn show_without_activating(window: &tauri::WebviewWindow) {
 struct TestMode {
     route: Option<String>,
     screenshot: Option<std::path::PathBuf>,
+    /// JavaScript to run once the page has loaded (to drive the UI).
+    eval: Option<String>,
+    settle: std::time::Duration,
 }
 
 /// After the page settles, renders it to a PNG through WebView2 itself
 /// (works while the window is off-screen, unlike screen capture) and exits.
 #[cfg(debug_assertions)]
-fn screenshot_then_exit(app: tauri::AppHandle, window: tauri::WebviewWindow, path: std::path::PathBuf) {
-    const SETTLE: std::time::Duration = std::time::Duration::from_millis(2500);
+fn screenshot_then_exit(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+    path: std::path::PathBuf,
+    settle: std::time::Duration,
+) {
     std::thread::spawn(move || {
-        std::thread::sleep(SETTLE);
+        std::thread::sleep(settle);
         let done = app.clone();
         let result = window.with_webview(move |wv| {
             use webview2_com::CapturePreviewCompletedHandler;
@@ -116,11 +131,13 @@ fn screenshot_then_exit(app: tauri::AppHandle, window: tauri::WebviewWindow, pat
 }
 
 #[cfg(not(debug_assertions))]
-fn screenshot_then_exit(_: tauri::AppHandle, _: tauri::WebviewWindow, _: std::path::PathBuf) {}
+fn screenshot_then_exit(_: tauri::AppHandle, _: tauri::WebviewWindow, _: std::path::PathBuf, _: std::time::Duration) {}
 
 /// `PLAYERSTV_UI_TEST=1` (debug builds only), with optional
 /// `PLAYERSTV_UI_ROUTE=/settings/video` to start on a page and
-/// `PLAYERSTV_UI_SCREENSHOT=out.png` to save a screenshot and exit.
+/// `PLAYERSTV_UI_SCREENSHOT=out.png` to save a screenshot and exit
+/// (`PLAYERSTV_UI_SETTLE_MS`, default 2500, after load), and
+/// `PLAYERSTV_UI_EVAL=<js>` to run a script half a second after load.
 #[cfg(debug_assertions)]
 fn test_mode() -> Option<TestMode> {
     std::env::var_os("PLAYERSTV_UI_TEST")?;
@@ -131,8 +148,10 @@ fn test_mode() -> Option<TestMode> {
         // leading slash into a filesystem path).
         .map(|r| format!("/{}", r.trim_start_matches('/')))
         // Only plain route characters reach the injected script.
-        .filter(|r| r.chars().all(|c| c.is_ascii_alphanumeric() || "/-_?=&".contains(c)));
-    Some(TestMode { route, screenshot })
+        .filter(|r| r.chars().all(|c| c.is_ascii_alphanumeric() || "/-_?=&%.".contains(c)));
+    let eval = std::env::var("PLAYERSTV_UI_EVAL").ok();
+    let settle = std::env::var("PLAYERSTV_UI_SETTLE_MS").ok().and_then(|s| s.parse().ok()).unwrap_or(2500);
+    Some(TestMode { route, screenshot, eval, settle: std::time::Duration::from_millis(settle) })
 }
 
 #[cfg(not(debug_assertions))]

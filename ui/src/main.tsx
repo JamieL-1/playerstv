@@ -6,6 +6,7 @@ import { AppShell } from "@/components/shell/AppShell";
 import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { LibraryPage } from "@/pages/LibraryPage";
+import { WatchPage } from "@/pages/WatchPage";
 import { SettingsLayout } from "@/pages/settings/SettingsLayout";
 import { ThemeProvider, useTheme } from "@/theme/ThemeProvider";
 import "./index.css";
@@ -27,6 +28,7 @@ const router = createHashRouter([
     ],
   },
   { path: "/settings/:section?", element: <SettingsLayout /> },
+  { path: "/watch", element: <WatchPage /> },
 ]);
 
 function ThemedToaster() {

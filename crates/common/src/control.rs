@@ -1,5 +1,5 @@
 //! Local control channel between the tray process and the playerstv window
-//! (`--settings`): a named pipe speaking one line of text each way.
+//! (`playerstv-ui.exe`): a named pipe speaking one line of text each way.
 //!
 //! Requests: `status`, `clip`, `session`. Every reply is a JSON [`Snapshot`].
 

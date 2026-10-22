@@ -1,12 +1,14 @@
 # Builds the downloadable release zip from an existing release build:
 #
+#   (cd ui; npm ci; npm run build)   # frontend, embedded in playerstv-ui.exe
 #   cargo build --release
 #   powershell -File scripts/fetch-ffmpeg.ps1
 #   powershell -File scripts/package.ps1 -Version v0.1.0
 #
 # Produces dist/playerstv-<version>-windows-x64.zip (+ .sha256) containing
-# playerstv.exe, ffmpeg.exe, the README and third-party notices. Unzip
-# anywhere and run playerstv.exe - it finds ffmpeg.exe next to itself.
+# playerstv.exe (tray), playerstv-ui.exe (window), ffmpeg.exe, the README and
+# third-party notices. Unzip anywhere and run playerstv.exe - it finds
+# ffmpeg.exe and playerstv-ui.exe next to itself.
 param(
     [Parameter(Mandatory)][string]$Version,
     [string]$Root,
@@ -21,8 +23,9 @@ if (-not $FfmpegDir) { $FfmpegDir = Join-Path $Root "vendor\ffmpeg" }
 if (-not $OutDir) { $OutDir = Join-Path $Root "dist" }
 
 $exe = Join-Path $Root "target\release\playerstv.exe"
+$uiExe = Join-Path $Root "target\release\playerstv-ui.exe"
 $ffmpeg = Join-Path $FfmpegDir "ffmpeg.exe"
-foreach ($f in $exe, $ffmpeg, (Join-Path $FfmpegDir "LICENSE.txt")) {
+foreach ($f in $exe, $uiExe, $ffmpeg, (Join-Path $FfmpegDir "LICENSE.txt")) {
     if (-not (Test-Path $f)) { throw "Missing $f - build/fetch first (see the comment at the top of this script)." }
 }
 
@@ -31,7 +34,7 @@ $stage = Join-Path $OutDir $name
 if (Test-Path $stage) { Remove-Item -Recurse -Force $stage }
 New-Item -ItemType Directory -Force (Join-Path $stage "licenses") | Out-Null
 
-Copy-Item $exe, $ffmpeg $stage
+Copy-Item $exe, $uiExe, $ffmpeg $stage
 Copy-Item (Join-Path $Root "README.md") $stage
 Copy-Item (Join-Path $FfmpegDir "LICENSE.txt") (Join-Path $stage "licenses\FFmpeg-LICENSE.txt")
 $ffmpegVersion = (& $ffmpeg -hide_banner -version | Select-Object -First 1)

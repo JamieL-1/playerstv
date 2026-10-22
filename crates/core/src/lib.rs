@@ -4,6 +4,7 @@
 pub mod clip;
 pub mod config;
 pub mod ffmpeg_args;
+pub mod media;
 pub mod profile;
 pub mod ring;
 pub mod storage;

@@ -88,3 +88,40 @@ export const LIMITS = {
 } as const;
 
 export const BUILTIN_GAME_IDS = ["runelite", "league-of-legends", "cs2"] as const;
+
+/** crates/core/src/media.rs */
+export interface VideoInfo {
+  codec: string;
+  width: number;
+  height: number;
+  fps: number;
+  /** 4:2:0 H.264/HEVC/AV1; see also lib/library.ts::canPlay. */
+  playable: boolean;
+}
+
+export interface MediaInfo {
+  duration_s: number;
+  video: VideoInfo | null;
+  audio_tracks: string[];
+}
+
+/** crates/ui/src/library.rs */
+export interface Recording {
+  path: string;
+  name: string;
+  /** Game folder name (safeName of the game's name). */
+  game: string;
+  kind: "clip" | "session";
+  size: number;
+  /** Unix seconds. */
+  modified: number;
+  /** null while the file is still being written, or if it can't be read. */
+  info: MediaInfo | null;
+  thumb: string | null;
+}
+
+/** crates/ui/src/trim.rs */
+export type ExportDone =
+  | { state: "saved"; id: number; path: string }
+  | { state: "failed"; id: number; error: string }
+  | { state: "cancelled"; id: number };

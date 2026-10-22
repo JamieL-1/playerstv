@@ -34,6 +34,16 @@ pub fn buffer_root() -> PathBuf {
     env_dir("LOCALAPPDATA").join(instance_name("buffer"))
 }
 
+/// The app window's metadata cache for the library.
+pub fn library_cache() -> PathBuf {
+    env_dir("LOCALAPPDATA").join(format!("{}.json", instance_name("library")))
+}
+
+/// The app window's thumbnail cache.
+pub fn thumbs_dir() -> PathBuf {
+    env_dir("LOCALAPPDATA").join(instance_name("thumbs"))
+}
+
 pub fn log_dir() -> PathBuf {
     env_dir("LOCALAPPDATA").join(instance_name("logs"))
 }

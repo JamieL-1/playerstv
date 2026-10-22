@@ -17,3 +17,11 @@ export function formatSize(bytes: number): string {
 export function nowSeconds(): number {
   return Math.floor(Date.now() / 1000);
 }
+
+const COMMON_FPS = [24, 25, 30, 48, 50, 60, 72, 90, 100, 120, 144, 165, 240];
+
+/** Average frame rates of variable-rate captures (118.5) as the nominal rate (120). */
+export function nominalFps(fps: number): number {
+  const near = COMMON_FPS.find((f) => Math.abs(fps - f) / f < 0.03);
+  return near ?? Math.round(fps);
+}

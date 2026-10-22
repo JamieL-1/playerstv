@@ -135,6 +135,7 @@ pub fn watch(app: AppHandle) {
                 if let Ok(cfg) = load() {
                     if last.as_ref() != Some(&cfg) {
                         let _ = app.emit("config-changed", &cfg);
+                        crate::library::config_changed(&app, &cfg);
                         last = Some(cfg);
                     }
                 }

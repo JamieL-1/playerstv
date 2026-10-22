@@ -1,9 +1,11 @@
 import { Film, LayoutGrid, Radio } from "lucide-react";
 import { NavLink, Outlet, useParams, useSearchParams } from "react-router";
-import type { GameProfile, Snapshot } from "@/api/types";
+import type { GameProfile, Recording, Snapshot } from "@/api/types";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { useConfig } from "@/hooks/useConfig";
+import { useLibrary } from "@/hooks/useLibrary";
 import { useStatus } from "@/hooks/useStatus";
+import { countKinds, gameFolder } from "@/lib/library";
 import { cn } from "@/lib/utils";
 import { RecordingPanel } from "./RecordingPanel";
 import { ServerRail } from "./ServerRail";
@@ -12,11 +14,12 @@ import { ServerRail } from "./ServerRail";
 export function AppShell() {
   const { data: config } = useConfig();
   const snapshot = useStatus();
+  const { data: recordings } = useLibrary();
   const games = config?.games ?? [];
   return (
     <div className="flex h-screen">
       <ServerRail games={games} snapshot={snapshot} />
-      <ChannelColumn games={games} snapshot={snapshot} />
+      <ChannelColumn games={games} recordings={recordings} snapshot={snapshot} />
       <main className="flex min-w-0 flex-1 flex-col bg-background">
         <Outlet />
       </main>
@@ -25,16 +28,22 @@ export function AppShell() {
 }
 
 const KINDS = [
-  { kind: null, label: "All recordings", icon: LayoutGrid },
-  { kind: "clips", label: "Clips", icon: Film },
-  { kind: "sessions", label: "Sessions", icon: Radio },
+  { kind: null, label: "All recordings", icon: LayoutGrid, count: "all" },
+  { kind: "clips", label: "Clips", icon: Film, count: "clips" },
+  { kind: "sessions", label: "Sessions", icon: Radio, count: "sessions" },
 ] as const;
 
-function ChannelColumn({ games, snapshot }: { games: GameProfile[]; snapshot: Snapshot | null | undefined }) {
+function ChannelColumn(props: {
+  games: GameProfile[];
+  recordings: Recording[] | undefined;
+  snapshot: Snapshot | null | undefined;
+}) {
+  const { games, recordings, snapshot } = props;
   const { gameId } = useParams();
   const [params] = useSearchParams();
   const game = games.find((g) => g.id === gameId);
   const current = params.get("kind");
+  const counts = recordings && countKinds(recordings, game ? gameFolder(game) : null);
   const base = gameId ? `/game/${encodeURIComponent(gameId)}` : "/";
   return (
     <aside className="flex w-60 shrink-0 flex-col bg-sidebar">
@@ -43,7 +52,7 @@ function ChannelColumn({ games, snapshot }: { games: GameProfile[]; snapshot: Sn
       </header>
       <ScrollArea className="flex-1">
         <div className="space-y-0.5 p-2">
-          {KINDS.map(({ kind, label, icon: Icon }) => (
+          {KINDS.map(({ kind, label, icon: Icon, count }) => (
             <NavLink
               key={label}
               to={kind ? `${base}?kind=${kind}` : base}
@@ -53,7 +62,8 @@ function ChannelColumn({ games, snapshot }: { games: GameProfile[]; snapshot: Sn
               )}
             >
               <Icon className="size-5 opacity-80" />
-              {label}
+              <span className="flex-1">{label}</span>
+              {counts && <span className="text-xs tabular-nums text-muted-foreground">{counts[count]}</span>}
             </NavLink>
           ))}
         </div>

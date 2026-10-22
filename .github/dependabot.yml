@@ -10,6 +10,18 @@ updates:
       minor-and-patch:
         update-types: [minor, patch]
 
+  # The window's frontend.
+  - package-ecosystem: npm
+    directory: "/ui"
+    schedule:
+      interval: weekly
+    # Releases must be at least two weeks old (project rule).
+    cooldown:
+      default-days: 14
+    groups:
+      minor-and-patch:
+        update-types: [minor, patch]
+
   - package-ecosystem: github-actions
     directory: "/"
     schedule:

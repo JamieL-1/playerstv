@@ -20,9 +20,34 @@ the last N seconds when you press a hotkey. Built in: **Old School RuneScape
   (replay buffer) or red (full session). Left-click it for the playerstv window,
   which shows the live session timer with Save clip / Stop & save session
   buttons. The tray menu shows `● REC 12:34` too.
+- **Library, player and trim editor**: every clip and session per game, played
+  in the app, with frame-exact trimming re-encoded on the GPU.
 
 Measured on an RTX 5080 recording RuneLite at 1900×1030@60: ~0.5 % total CPU,
 ~11 % NVENC, tray process 9 MB private memory. A 30 s buffer is ~40 MB on disk.
+
+## The window
+
+Left-click the tray icon (or *Open playerstv*) for a Discord-style window. It's
+a separate process, `playerstv-ui.exe`, that only runs while the window is
+open, so recording costs nothing extra the rest of the time.
+
+- **Library**: a server rail with one icon per game, *All recordings / Clips /
+  Sessions* with counts, and a thumbnail grid with search and sorting. It
+  updates live as clips are saved. Right-click a recording (or use its `⋯`
+  menu) to play, trim, show it in Explorer, open it in your default player or
+  delete it (to the Recycle Bin, after a confirmation).
+- **Player**: `Space`/`K` play/pause, `J`/`L` ±10 s, `←`/`→` ±5 s, `,`/`.`
+  one frame, `F` full screen, `M` mute, `Esc` back. It plays the first audio
+  track (*Mixed*). Older 4:4:4 recordings, and HEVC where WebView2 can't decode
+  it, get an *Open in default player* button instead.
+- **Trim editor**: drag the in/out handles or press `I`/`O` at the playhead;
+  playback loops inside the selection. *Save clip* cuts exactly there,
+  re-encodes the video with NVENC in the source's codec at your quality
+  setting, and copies every audio track with its name. The result is saved as
+  a new clip next to the original, and counts toward the storage limit.
+- **Settings and themes**: everything in `config.toml`, plus Discord's
+  Dark/Ash/Onyx/Light themes, an accent colour and gradient themes.
 
 ## Storage limit
 
@@ -87,23 +112,24 @@ the run as an artifact.
 
 - Windows 10 2004+ / Windows 11 (per-process audio loopback, WGC capture)
 - NVIDIA GPU with NVENC
+- Microsoft Edge WebView2 runtime for the window (preinstalled on Windows 11)
 - FFmpeg **8.0 or newer** (needs the `gfxcapture` filter) — fetched by script
+- To build: Rust (stable) and Node.js 24
 
 ## Build & run
 
 ```powershell
 powershell -File scripts/fetch-ffmpeg.ps1   # puts ffmpeg.exe in vendor/ffmpeg
+cd ui; npm ci; npm run build; cd ..         # the window's frontend (embedded in playerstv-ui.exe)
 cargo build --release
-target\release\playerstv.exe                # tray app
+target\release\playerstv.exe                # tray app; it starts playerstv-ui.exe for the window
 ```
 
-For distribution, place `ffmpeg.exe` next to `playerstv.exe`.
-
-Other modes:
+For distribution, place `ffmpeg.exe` and `playerstv-ui.exe` next to
+`playerstv.exe` (`scripts/package.ps1` does this).
 
 | Command | What it does |
 |---|---|
-| `playerstv --settings` | The playerstv window: status, controls, settings (left-click the tray icon) |
 | `playerstv --smoke 15` | Headless check: wait for the game, record 15 s, save a clip, print its path |
 
 ## Files
@@ -115,8 +141,9 @@ Other modes:
 | Sessions | `%USERPROFILE%\Videos\playerstv\<Game>\Sessions\` |
 | Replay buffer | `%LOCALAPPDATA%\playerstv\buffer\` (deleted when the game closes) |
 | Logs | `%LOCALAPPDATA%\playerstv\logs\` (`PLAYERSTV_LOG=debug` for more) |
+| Library cache | `%LOCALAPPDATA%\playerstv\library.json` (metadata) and `thumbs\` |
 
-The settings window writes `config.toml`; the tray app watches the file and
+The window writes `config.toml`; the tray app watches the file and
 applies changes immediately (changing video/audio settings restarts the
 encoder). Built-in games keep their detection rules in code (only the on/off
 switch is stored), so detection fixes arrive with updates. A custom game is a
@@ -136,14 +163,29 @@ leftovers.
  Microphone ─────WASAPI capture──────────► named pipe ─┘                           │
                                                                                      ▼
                           hotkey ──► stream-copy concat of newest segments ──► clip.mp4
+
+ playerstv.exe (tray) ◄──control pipe: status / clip / session──► playerstv-ui.exe (window)
+        ▲                                                           │  Tauri + WebView2
+        └────────────── config.toml (both watch it) ────────────────┤  React frontend (ui/)
+                                                                    ▼
+                         output folder ──► library (metadata, ffmpeg thumbnails)
+                                       ──► player (asset protocol) ──► trim ──► NVENC ──► new clip
 ```
 
-- `crates/core` — config, game profiles, ffmpeg argument builder, segment
-  ring-buffer maths, clip naming. Pure and unit-tested (`cargo test`).
+- `crates/core` — config, game profiles, ffmpeg argument builders (recording,
+  clip export, trim), segment ring-buffer maths, clip naming, storage limit,
+  and a small MP4 reader for library metadata. Pure and unit-tested
+  (`cargo test`).
 - `crates/capture` — window detection (Win32) and audio feeders (WASAPI →
   named pipes). Feeders run on a wall clock and pad silence, so a silent game
   never stalls the audio track.
-- `crates/app` — tray, hotkeys, supervisor state machine, settings UI.
+- `crates/common` — paths, the control pipe and process helpers shared by the
+  tray and the window.
+- `crates/app` — the tray app: tray, hotkeys, supervisor state machine.
+- `crates/ui` — the window's backend (Tauri 2): status, settings, library,
+  thumbnails, trim exports.
+- `ui/` — the window's frontend: React, TypeScript, shadcn/ui on Tailwind,
+  built with Vite+ (`vp`).
 
 Design notes:
 
@@ -163,15 +205,37 @@ CI (`.github/workflows/ci.yml`) runs on every push to `main` and every pull
 request; run the same checks locally before pushing:
 
 ```powershell
+cd ui; npm run check; npm test; npm run build; cd ..   # first: crates/ui embeds ui/dist
 cargo fmt --all --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --workspace --locked
 ```
 
 It also runs `cargo audit` against the RustSec advisory database, and
-Dependabot opens weekly PRs for crate and Actions updates. Formatting uses
+Dependabot opens weekly PRs for crate, npm and Actions updates. Formatting uses
 `rustfmt.toml` (120 columns); `record_args` opts out so each ffmpeg flag
 stays next to its value.
+
+**Window development with live reload**: run `npm run dev` in `ui/`, then
+`cargo run -p playerstv-ui --no-default-features` (without the default
+`custom-protocol` feature the window loads the Vite dev server instead of the
+embedded files). Any frontend change needs `npm run build` before a normal
+`cargo build` picks it up.
+
+**UI test mode** (debug builds only) opens the window off-screen and
+unfocused, so tests never pop up over a game:
+
+| Variable | Effect |
+|---|---|
+| `PLAYERSTV_UI_TEST=1` | Enable test mode |
+| `PLAYERSTV_UI_ROUTE=/settings/video` | Start on a page (e.g. `/game/runelite?kind=clips`, `/watch?path=<url-encoded>`) |
+| `PLAYERSTV_UI_EVAL=<js>` | Run a script half a second after load, to drive the UI |
+| `PLAYERSTV_UI_SCREENSHOT=out.png` | Save a screenshot (via WebView2) and exit |
+| `PLAYERSTV_UI_SETTLE_MS=2500` | How long to wait before the screenshot |
+
+Combine it with `PLAYERSTV_INSTANCE=test` and a `PLAYERSTV_CONFIG` whose games
+are all disabled. From Git Bash, set `MSYS_NO_PATHCONV=1` so routes aren't
+rewritten into paths.
 
 ## Diagnostics
 
@@ -187,7 +251,8 @@ attenuated (in-game volume, Windows communications ducking during calls).
 ## Not done yet / known gaps
 
 - YouTube upload (planned: OAuth loopback flow + resumable upload API).
-- Clip library / trimming UI.
+- The in-app player plays only the first audio track (*Mixed*); trimmed clips
+  keep all of them.
 - Behaviour while the game window is minimised hasn't been tested.
 - Windows logoff/shutdown doesn't trigger a graceful save; an in-progress
   session is recovered on next launch instead.

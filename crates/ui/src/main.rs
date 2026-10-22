@@ -5,12 +5,16 @@
 //! Started by the tray app; talks to it over the control pipe and the
 //! config file (see `ptv_common`).
 
+mod library;
 mod settings;
 mod status;
+mod thumbs;
+mod trim;
 mod window;
 
 fn main() {
     tauri::Builder::default()
+        .manage(trim::Exports::default())
         // A second launch (e.g. clicking the tray icon again) focuses this
         // window instead of opening another.
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
@@ -26,6 +30,7 @@ fn main() {
         .setup(|app| {
             window::create_main(app)?;
             status::start_poller(app.handle().clone());
+            library::init(app.handle());
             settings::watch(app.handle().clone());
             Ok(())
         })
@@ -42,6 +47,13 @@ fn main() {
             settings::storage_usage,
             settings::list_mics,
             settings::pick_folder,
+            library::list_recordings,
+            library::delete_recording,
+            library::show_in_explorer,
+            library::open_external,
+            library::open_output_folder,
+            trim::export_trim,
+            trim::cancel_trim,
         ])
         .run(tauri::generate_context!())
         .expect("error while running playerstv-ui");

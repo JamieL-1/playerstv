@@ -2729,6 +2729,7 @@ name = "playerstv-ui"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "chrono",
  "global-hotkey",
  "notify",
  "playerstv-capture",
