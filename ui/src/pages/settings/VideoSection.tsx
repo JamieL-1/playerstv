@@ -21,7 +21,7 @@ export function VideoSection() {
     <>
       <SectionTitle
         title="Video"
-        description={`Encoded on your NVIDIA GPU (NVENC), so recording costs almost nothing. ${OVERRIDE_NOTE}`}
+        description={`Encoded on your NVIDIA GPU (NVENC), so recording uses almost no CPU. ${OVERRIDE_NOTE}`}
       />
       <SettingRow label="Resolution">
         <Select value={v.resolution} onValueChange={(r) => set({ resolution: r as Resolution })}>
@@ -39,13 +39,13 @@ export function VideoSection() {
       </SettingRow>
       {v.resolution === "2x" && (
         <Hint>
-          Every game pixel becomes a crisp 2×2 block: sharp coloured text in any player, and YouTube serves it at 4K
-          bitrates. Files are ~2.5× bigger. Falls back to native if the result is too big for the encoder.
+          Every game pixel becomes a 2×2 block, so coloured text stays sharp in any player and YouTube serves it at 4K
+          bitrates. Files are ~2.5× bigger. If the result is too big for the encoder, playerstv records at native size.
         </Hint>
       )}
       {v.resolution !== "native" && v.resolution !== "2x" && (
         <Hint>
-          A size bigger than your game window just upscales it (YouTube does give higher resolutions more bitrate).
+          A size bigger than your game window only upscales it, though YouTube gives higher resolutions more bitrate.
         </Hint>
       )}
       <SettingRow label="Frame rate">
@@ -71,7 +71,7 @@ export function VideoSection() {
             {CODECS.map((c) => (
               <SelectItem key={c.value} value={c.value} disabled={!playable.has(c.value)}>
                 {c.label}
-                {!playable.has(c.value) && " — can't play on this PC"}
+                {!playable.has(c.value) && ", can't play on this PC"}
               </SelectItem>
             ))}
           </SelectContent>

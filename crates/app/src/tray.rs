@@ -4,7 +4,9 @@
 
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use global_hotkey::hotkey::HotKey;
@@ -23,9 +25,15 @@ use windows::Win32::UI::WindowsAndMessaging::{
 
 use crate::control::{self, Request, Snapshot};
 use crate::supervisor::{self, unix_now, Command, Status, Supervisor};
+use crate::updater::{self, Staged};
 use crate::{autostart, paths};
 
 const WM_WAKE: u32 = WM_APP + 1;
+/// The window asks for status every 500 ms while it's open.
+const WINDOW_POLL_GRACE_SECS: u64 = 3;
+/// How long a just-launched window gets to start polling before it counts
+/// as closed.
+const WINDOW_STARTUP_GRACE: Duration = Duration::from_secs(30);
 
 enum AppEvent {
     Menu(MenuId),
@@ -33,8 +41,11 @@ enum AppEvent {
     OpenWindow,
     /// Quit from the window.
     Quit,
+    /// "Restart to update" from the window.
+    Restart,
     Supervisor(supervisor::Event),
     ConfigFileChanged,
+    UpdateReady(Staged),
 }
 
 struct Items {
@@ -166,16 +177,20 @@ pub fn run(mut cfg: Config, show_window: bool) -> Result<()> {
     let sup_thread = std::thread::Builder::new().name("supervisor".into()).spawn(move || sup.run(cmd_rx))?;
 
     // The playerstv window reads status and sends commands over this.
-    let snapshot = Arc::new(Mutex::new(snapshot_of(&cfg, &Status::Waiting, None)));
+    let snapshot = Arc::new(Mutex::new(snapshot_of(&cfg, &Status::Waiting, None, None)));
+    // When the window last polled for status: it's open if that was recent.
+    let window_polled = Arc::new(AtomicU64::new(0));
     {
         let cmd_tx = cmd_tx.clone();
         let post = post.clone();
+        let window_polled = window_polled.clone();
         control::serve(snapshot.clone(), move |req| {
             let _ = cmd_tx.send(match req {
                 Request::SaveClip => Command::SaveClip,
                 Request::ToggleSession => Command::ToggleSession,
                 Request::Quit => return post(AppEvent::Quit),
-                Request::Status => return,
+                Request::Restart => return post(AppEvent::Restart),
+                Request::Status => return window_polled.store(unix_now(), Ordering::Relaxed),
             });
         });
     }
@@ -232,9 +247,23 @@ pub fn run(mut cfg: Config, show_window: bool) -> Result<()> {
     hotkeys.register(&cfg);
     update_labels(&items, &cfg, &Status::Waiting);
     apply_autostart(&cfg);
+    let mut window_launched = None;
     if show_window {
         open_window();
+        window_launched = Some(Instant::now());
     }
+
+    let updates_allowed = Arc::new(AtomicBool::new(cfg.auto_update));
+    if updater::enabled() {
+        let post = post.clone();
+        updater::spawn(updates_allowed.clone(), move |staged| post(AppEvent::UpdateReady(staged)));
+    }
+    // A downloaded update: installed when nothing is recording and the window
+    // is closed (then playerstv restarts by itself), on "Restart to update",
+    // or otherwise on the way out, so the next start runs it.
+    let mut pending_update: Option<Staged> = None;
+    // Arguments to start playerstv with again once this process has exited.
+    let mut restart_with: Option<&[&str]> = None;
 
     // Ticks once a second to keep the "REC 12:34" labels current.
     let timer = unsafe { SetTimer(None, 0, 1000, None) };
@@ -246,6 +275,18 @@ pub fn run(mut cfg: Config, show_window: bool) -> Result<()> {
     let mut msg = MSG::default();
     'outer: while unsafe { GetMessageW(&mut msg, None, 0, 0) }.as_bool() {
         if msg.message == WM_TIMER && msg.hwnd.is_invalid() {
+            let window_open = unix_now().saturating_sub(window_polled.load(Ordering::Relaxed))
+                <= WINDOW_POLL_GRACE_SECS
+                || window_launched.is_some_and(|t: Instant| t.elapsed() < WINDOW_STARTUP_GRACE);
+            if pending_update.is_some()
+                && matches!(status, Status::Waiting)
+                && !window_open
+                && install_update(&mut pending_update)
+            {
+                tracing::info!("restarting into the update");
+                restart_with = Some(&[crate::BACKGROUND_FLAG]);
+                break 'outer;
+            }
             // Both the session timer and "Ns of 30s ready" change over time;
             // only touch the menu when the text actually changed.
             let line = tooltip(&status, &cfg);
@@ -272,8 +313,20 @@ pub fn run(mut cfg: Config, show_window: bool) -> Result<()> {
                         let _ = cmd_tx.send(Command::ToggleSession);
                     }
                 }
-                AppEvent::OpenWindow => open_window(),
+                AppEvent::OpenWindow => {
+                    open_window();
+                    window_launched = Some(Instant::now());
+                }
                 AppEvent::Quit => break 'outer,
+                AppEvent::Restart if pending_update.is_some() => {
+                    if install_update(&mut pending_update) {
+                        restart_with = Some(&[]);
+                        break 'outer;
+                    }
+                    toast("Update failed", "Couldn't install the update (see the log). playerstv keeps running.");
+                }
+                AppEvent::Restart => {}
+                AppEvent::UpdateReady(staged) => pending_update = Some(staged),
                 AppEvent::Menu(id) => {
                     if id == *items.clip.id() {
                         let _ = cmd_tx.send(Command::SaveClip);
@@ -281,6 +334,7 @@ pub fn run(mut cfg: Config, show_window: bool) -> Result<()> {
                         let _ = cmd_tx.send(Command::ToggleSession);
                     } else if id == *items.open.id() {
                         open_window();
+                        window_launched = Some(Instant::now());
                     } else if id == *items.open_folder.id() {
                         let _ = std::fs::create_dir_all(&cfg.output_dir);
                         let _ = std::process::Command::new("explorer").arg(&cfg.output_dir).spawn();
@@ -360,6 +414,10 @@ pub fn run(mut cfg: Config, show_window: bool) -> Result<()> {
                             if new.start_with_windows != cfg.start_with_windows {
                                 apply_autostart(&new);
                             }
+                            updates_allowed.store(new.auto_update, Ordering::Relaxed);
+                            if !new.auto_update && pending_update.take().is_some() {
+                                tracing::info!("updates turned off; not installing the downloaded update");
+                            }
                             cfg = new;
                             update_labels(&items, &cfg, &status);
                             let _ = cmd_tx.send(Command::Reload(Box::new(cfg.clone())));
@@ -370,7 +428,8 @@ pub fn run(mut cfg: Config, show_window: bool) -> Result<()> {
                 }
             }
         }
-        *snapshot.lock().unwrap() = snapshot_of(&cfg, &status, last_saved.clone());
+        let update_ready = pending_update.as_ref().map(|u| u.version.clone());
+        *snapshot.lock().unwrap() = snapshot_of(&cfg, &status, last_saved.clone(), update_ready);
     }
 
     tracing::info!("shutting down");
@@ -382,10 +441,29 @@ pub fn run(mut cfg: Config, show_window: bool) -> Result<()> {
     let _ = cmd_tx.send(Command::Shutdown);
     let _ = sup_thread.join();
     drop(tray);
+    match restart_with {
+        Some(args) => crate::relaunch_after_exit(args),
+        None => {
+            install_update(&mut pending_update);
+        }
+    }
     Ok(())
 }
 
-fn snapshot_of(cfg: &Config, status: &Status, last_saved: Option<PathBuf>) -> Snapshot {
+/// Installs the pending update, if any; true if it was installed. A failed
+/// install isn't retried until the next start (which downloads it again).
+fn install_update(pending: &mut Option<Staged>) -> bool {
+    let Some(staged) = pending.take() else { return false };
+    match updater::install(&staged) {
+        Ok(()) => true,
+        Err(e) => {
+            tracing::warn!("couldn't install update {}: {e:#}", staged.version);
+            false
+        }
+    }
+}
+
+fn snapshot_of(cfg: &Config, status: &Status, last_saved: Option<PathBuf>, update_ready: Option<String>) -> Snapshot {
     Snapshot {
         status: status.clone(),
         buffer_seconds: status.buffer_seconds_or(cfg.buffer_seconds),
@@ -393,6 +471,7 @@ fn snapshot_of(cfg: &Config, status: &Status, last_saved: Option<PathBuf>) -> Sn
         session_hotkey: cfg.session_hotkey.clone(),
         output_dir: cfg.output_dir.clone(),
         last_saved,
+        update_ready,
     }
 }
 

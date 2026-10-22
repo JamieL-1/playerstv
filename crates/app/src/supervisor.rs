@@ -279,7 +279,7 @@ impl Supervisor {
 
     fn save_clip(&mut self) {
         let Some(active) = &self.active else {
-            self.emit(Event::Error("No game running — nothing to clip.".into()));
+            self.emit(Event::Error("No game running, so there's nothing to clip.".into()));
             return;
         };
         let latest = match ring::scan(&active.dir) {
@@ -287,7 +287,7 @@ impl Supervisor {
             Err(e) => return self.emit(Event::Error(format!("Reading buffer failed: {e}"))),
         };
         let Some(latest) = latest else {
-            return self.emit(Event::Error("Nothing recorded yet — try again in a moment.".into()));
+            return self.emit(Event::Error("Nothing recorded yet. Try again in a few seconds.".into()));
         };
         let out = clip::output_path(&self.cfg.output_dir, &active.window.profile.name, ExportKind::Clip, Local::now());
         let titles = active.audio_titles.clone();
@@ -302,7 +302,7 @@ impl Supervisor {
 
     fn toggle_session(&mut self) {
         let Some(mut active) = self.active.take() else {
-            self.emit(Event::Error("No game running — session recording starts once a game is detected.".into()));
+            self.emit(Event::Error("No game running. Session recording starts when playerstv detects a game.".into()));
             return;
         };
         if active.session_from.is_some() {

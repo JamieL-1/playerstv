@@ -1,58 +1,38 @@
 playerstv {VERSION}
 ==================
 
-A replay recorder for Windows: it notices when your game opens, keeps the
-last 30 seconds ready, and saves them as a clip when you press a hotkey.
+Records your game in the background and saves the last 30 seconds when you
+press Alt+F10.
 
 
-RUNNING IT
-----------
-1. Unzip this folder anywhere (e.g. your Desktop or Documents).
-2. Double-click playerstv.exe.
-   Windows may say "Windows protected your PC" because the app isn't signed:
-   click "More info", then "Run anyway".
-3. The playerstv window opens, and a playerstv icon appears in the system
-   tray (bottom-right, near the clock; it may be under the ^ arrow).
-   Left-click the tray icon to open the window if you can't see it.
-4. Closing the window quits playerstv completely, as do right-click the tray
-   icon > Quit and "Quit playerstv" at the bottom of the window's settings.
+GETTING STARTED
+---------------
+1. Unzip this folder anywhere and double-click playerstv.exe.
+   If Windows says "Windows protected your PC", click "More info", then
+   "Run anyway". The app isn't signed yet.
+2. The playerstv window opens and an icon appears in the system tray, near
+   the clock. Left-click the icon to bring the window back.
+3. Start Old School RuneScape (RuneLite), League of Legends or
+   Counter-Strike 2. The tray dot turns green when recording is ready.
 
-The first start takes a few seconds longer while it unpacks its video tools.
+Alt+F10   save the last 30 seconds
+Alt+F9    start or stop recording the whole session
 
+Clips appear in the window's library and in Videos\playerstv. Closing the
+window quits playerstv. playerstv updates itself, and you can turn that off
+in settings.
 
-USING IT
---------
-- Start one of the supported games: Old School RuneScape (RuneLite),
-  League of Legends (in matches) or Counter-Strike 2. Turn games on/off in
-  the window or the tray menu. The tray dot turns green when it's ready.
-- Alt+F10   save the last 30 seconds as a clip
-- Alt+F9    start/stop recording the whole session (tray dot turns red)
-- Clips appear in the window's library, where you can play and trim them.
-  The files are in  Videos\playerstv\<game>\
-- Hotkeys, quality, audio and the clip length are in the window's settings.
-
-
-NEEDS
------
-- Windows 10 (version 2004 or newer) or Windows 11
-- An NVIDIA graphics card (it records with the card's NVENC encoder)
-- Microsoft Edge WebView2 Runtime for the window. It's already on Windows 11
-  and most Windows 10 PCs; if it's missing, playerstv says so and offers
-  the download.
+You need an NVIDIA graphics card and Windows 10 (2004 or newer) or 11.
 
 
 IF SOMETHING GOES WRONG
 -----------------------
-Please send the newest file from this folder along with what happened:
-    %LOCALAPPDATA%\playerstv\logs
-(paste that into the File Explorer address bar)
+Paste %LOCALAPPDATA%\playerstv\logs into the File Explorer address bar and
+send the newest file, with a note of what happened.
 
 
 REMOVING IT
 -----------
-1. If you turned on "Start with Windows" in settings, turn it off.
-2. Right-click the tray icon > Quit, then delete this folder.
-3. Optionally delete its settings and cache:
-       %APPDATA%\playerstv
-       %LOCALAPPDATA%\playerstv
-   Your recordings in Videos\playerstv are kept unless you delete them.
+Turn off "Start with Windows" if you turned it on, quit playerstv, and
+delete this folder. To remove settings too, delete %APPDATA%\playerstv and
+%LOCALAPPDATA%\playerstv. Your recordings stay in Videos\playerstv.

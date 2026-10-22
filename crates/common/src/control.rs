@@ -1,7 +1,7 @@
 //! Local control channel between the tray process and the playerstv window
 //! (`playerstv.exe --window`): a named pipe speaking one line of text each way.
 //!
-//! Requests: `status`, `clip`, `session`, `quit`. Every reply is a JSON
+//! Requests: `status`, `clip`, `session`, `quit`, `restart`. Every reply is a JSON
 //! [`Snapshot`].
 
 use std::fs::{File, OpenOptions};
@@ -60,6 +60,9 @@ pub struct Snapshot {
     pub session_hotkey: String,
     pub output_dir: PathBuf,
     pub last_saved: Option<PathBuf>,
+    /// Version of a downloaded update that a restart would install.
+    #[serde(default)]
+    pub update_ready: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -69,6 +72,8 @@ pub enum Request {
     ToggleSession,
     /// Quit the tray (and with it the window, see [`QuitSignal`]).
     Quit,
+    /// Install the downloaded update and start playerstv again.
+    Restart,
 }
 
 impl Request {
@@ -78,11 +83,12 @@ impl Request {
             Request::SaveClip => "clip",
             Request::ToggleSession => "session",
             Request::Quit => "quit",
+            Request::Restart => "restart",
         }
     }
 
     fn parse(s: &str) -> Option<Self> {
-        [Request::Status, Request::SaveClip, Request::ToggleSession, Request::Quit]
+        [Request::Status, Request::SaveClip, Request::ToggleSession, Request::Quit, Request::Restart]
             .into_iter()
             .find(|r| r.as_str() == s)
     }
@@ -141,6 +147,8 @@ impl Drop for QuitSignal {
 const LISTENERS: usize = 4;
 
 /// Runs the server on background threads for the life of the process.
+/// `on_request` sees every request, `Status` included (the window polls it
+/// while open), before the snapshot is sent back.
 pub fn serve(snapshot: Arc<Mutex<Snapshot>>, on_request: impl Fn(Request) + Send + Sync + 'static) {
     let on_request = Arc::new(on_request);
     for i in 0..LISTENERS {
@@ -193,9 +201,7 @@ fn answer(file: &File, snapshot: &Mutex<Snapshot>, on_request: &impl Fn(Request)
     let mut line = String::new();
     BufReader::new(file).read_line(&mut line)?;
     let request = Request::parse(line.trim()).with_context(|| format!("unknown request {line:?}"))?;
-    if request != Request::Status {
-        on_request(request);
-    }
+    on_request(request);
     let reply = serde_json::to_string(&*snapshot.lock().unwrap())?;
     let mut file = file;
     writeln!(file, "{reply}")?;
@@ -243,6 +249,7 @@ mod tests {
             session_hotkey: "Alt+F9".into(),
             output_dir: PathBuf::from("out"),
             last_saved: None,
+            update_ready: None,
         }));
         let clips = Arc::new(AtomicUsize::new(0));
         {

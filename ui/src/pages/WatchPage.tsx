@@ -260,7 +260,7 @@ function Watch(props: { rec: Recording; trimming: boolean; setTrimming: (on: boo
               </span>
             </TooltipTrigger>
             <TooltipContent className="max-w-64">
-              Playing the “{tracks[0]}” track.
+              Playing the "{tracks[0]}" track.
               {tracks.length > 1 && ` Exported clips keep all ${tracks.length} tracks: ${tracks.join(", ")}.`}
             </TooltipContent>
           </Tooltip>

@@ -86,7 +86,7 @@ export function HotkeyRecorder({ value, onChange }: { value: string; onChange: (
       const result = hotkeyFromKeyPress(e);
       if (result.kind === "pending") return;
       if (result.kind === "needs-modifier") {
-        setMessage(`Add Ctrl, Alt or Shift — ${result.key} on its own would stop working everywhere else.`);
+        setMessage(`Add Ctrl, Alt or Shift. ${result.key} on its own would stop working in every other app.`);
         return;
       }
       onChange(result.hotkey);

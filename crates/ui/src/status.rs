@@ -65,6 +65,13 @@ pub async fn toggle_session() -> Result<Snapshot, String> {
     send(Request::ToggleSession)
 }
 
+/// Installs the update the tray downloaded; playerstv (window included)
+/// closes and starts again on the new version.
+#[tauri::command]
+pub async fn restart_to_update() -> Result<Snapshot, String> {
+    send(Request::Restart)
+}
+
 /// Starts the tray (this same exe, without opening another window) when it
 /// isn't running, e.g. after Quit from the tray menu.
 #[tauri::command]

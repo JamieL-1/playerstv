@@ -69,6 +69,7 @@ fn run_window() {
             status::get_status,
             status::save_clip,
             status::toggle_session,
+            status::restart_to_update,
             status::start_tray,
             settings::get_config,
             settings::save_config,
