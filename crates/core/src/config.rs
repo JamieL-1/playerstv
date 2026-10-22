@@ -130,12 +130,6 @@ impl Codec {
         }
     }
 
-    /// NVENC can encode RGB input as 4:4:4 with H.264 and HEVC; AV1 4:4:4
-    /// isn't supported by current consumer GPUs.
-    pub fn supports_full_chroma(self) -> bool {
-        !matches!(self, Codec::Av1)
-    }
-
     /// Largest frame width/height NVENC accepts for this codec.
     pub fn max_dimension(self) -> u32 {
         match self {
@@ -147,8 +141,9 @@ impl Codec {
 
 pub const FPS_CHOICES: [u32; 4] = [30, 60, 90, 120];
 
-// Older configs had `cq` and `max_bitrate_kbps` here; they're ignored on load
-// (unknown keys are skipped) and replaced by `quality` and `bitrate_cap_mbps`.
+// Older configs had `cq` and `max_bitrate_kbps` here (replaced by `quality`
+// and `bitrate_cap_mbps`) and `full_chroma` (4:4:4, removed: the app's
+// player can't play it). Unknown keys are skipped on load.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct VideoConfig {
@@ -156,10 +151,6 @@ pub struct VideoConfig {
     pub fps: u32,
     pub codec: Codec,
     pub quality: Quality,
-    /// Encode colour at full resolution (4:4:4) instead of quarter (4:2:0).
-    /// Much sharper coloured text and UI, but many players (Windows Media
-    /// Player, browsers, Discord) can't play it; VLC/mpv and YouTube can.
-    pub full_chroma: bool,
     /// Peak bitrate cap; `None` picks one from quality, size and frame rate.
     pub bitrate_cap_mbps: Option<u32>,
 }
@@ -171,7 +162,6 @@ impl Default for VideoConfig {
             fps: 60,
             codec: Codec::H264,
             quality: Quality::High,
-            full_chroma: false,
             bitrate_cap_mbps: None,
         }
     }
@@ -240,6 +230,68 @@ impl Default for AudioConfig {
     }
 }
 
+/// Base colour scheme of the window (Discord-style).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum BaseTheme {
+    #[default]
+    Dark,
+    Ash,
+    Onyx,
+    Light,
+}
+
+/// A two-colour background gradient (Nitro-style themes).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Gradient {
+    /// Preset id, or "custom".
+    pub name: String,
+    pub from: String,
+    pub to: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct UiConfig {
+    pub theme: BaseTheme,
+    /// Accent colour as `#rrggbb`.
+    pub accent: String,
+    /// Background gradient; `None` = the plain base theme.
+    pub gradient: Option<Gradient>,
+}
+
+pub const DEFAULT_ACCENT: &str = "#5865f2";
+
+impl Default for UiConfig {
+    fn default() -> Self {
+        Self { theme: BaseTheme::Dark, accent: DEFAULT_ACCENT.into(), gradient: None }
+    }
+}
+
+/// `#rrggbb` (any case), the only colour format the UI writes.
+pub fn is_hex_colour(s: &str) -> bool {
+    s.len() == 7 && s.starts_with('#') && s[1..].bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+impl UiConfig {
+    /// Replace anything a hand-edited config got wrong with defaults, so the
+    /// UI never has to cope with a malformed colour.
+    pub fn sanitize(&mut self) {
+        if !is_hex_colour(&self.accent) {
+            self.accent = DEFAULT_ACCENT.into();
+        }
+        self.accent.make_ascii_lowercase();
+        if let Some(g) = &mut self.gradient {
+            if !is_hex_colour(&g.from) || !is_hex_colour(&g.to) {
+                self.gradient = None;
+            } else {
+                g.from.make_ascii_lowercase();
+                g.to.make_ascii_lowercase();
+            }
+        }
+    }
+}
+
 pub const MAX_VOLUME_PERCENT: u32 = 400;
 pub const MAX_STORAGE_LIMIT_GB: u32 = 20_000;
 // Shared with the settings UI so its sliders accept every value a config can
@@ -271,6 +323,8 @@ pub struct Config {
     pub video: VideoConfig,
     pub audio: AudioConfig,
     pub games: Vec<GameProfile>,
+    /// Look of the playerstv window. Only the UI reads this; the tray ignores it.
+    pub ui: UiConfig,
 }
 
 impl Default for Config {
@@ -287,6 +341,7 @@ impl Default for Config {
             video: VideoConfig::default(),
             audio: AudioConfig::default(),
             games: profile::builtins(),
+            ui: UiConfig::default(),
         }
     }
 }
@@ -329,6 +384,7 @@ impl Config {
         self.audio.game_volume = self.audio.game_volume.min(MAX_VOLUME_PERCENT);
         self.audio.mic_volume = self.audio.mic_volume.min(MAX_VOLUME_PERCENT);
         profile::merge_builtins(&mut self.games);
+        self.ui.sanitize();
         self.storage_limit_gb =
             self.storage_limit_gb.map(|g| g.clamp(*STORAGE_LIMIT_GB.start(), *STORAGE_LIMIT_GB.end()));
     }
@@ -412,6 +468,39 @@ mod tests {
         assert_eq!(cfg.video.fps, 120);
         let text = toml::to_string_pretty(&cfg).unwrap();
         assert!(!text.contains("cq"));
+    }
+
+    #[test]
+    fn ui_theme_defaults_and_sanitizing() {
+        // Old configs have no [ui] section.
+        let cfg: Config = toml::from_str("buffer_seconds = 30\n").unwrap();
+        assert_eq!(cfg.ui, UiConfig::default());
+        let mut cfg: Config = toml::from_str(
+            "[ui]\ntheme = \"onyx\"\naccent = \"#FF00AA\"\n[ui.gradient]\nname = \"sunset\"\nfrom = \"#ff7a59\"\nto = \"#8a2be2\"\n",
+        )
+        .unwrap();
+        cfg.sanitize();
+        assert_eq!(cfg.ui.theme, BaseTheme::Onyx);
+        assert_eq!(cfg.ui.accent, "#ff00aa");
+        assert_eq!(cfg.ui.gradient.as_ref().unwrap().to, "#8a2be2");
+        // Bad colours fall back instead of reaching the UI.
+        cfg.ui.accent = "red".into();
+        cfg.ui.gradient.as_mut().unwrap().from = "#12345".into();
+        cfg.sanitize();
+        assert_eq!(cfg.ui.accent, DEFAULT_ACCENT);
+        assert_eq!(cfg.ui.gradient, None);
+        // Round trip.
+        let back: Config = toml::from_str(&toml::to_string_pretty(&cfg).unwrap()).unwrap();
+        assert_eq!(back.ui, cfg.ui);
+    }
+
+    #[test]
+    fn old_full_chroma_setting_still_loads() {
+        // 4:4:4 was removed (the app's player can't play it); configs that
+        // had it switched on must still load, and drop it on save.
+        let cfg: Config = toml::from_str("[video]\ncodec = \"hevc\"\nfull_chroma = true\n").unwrap();
+        assert_eq!(cfg.video.codec, Codec::Hevc);
+        assert!(!toml::to_string_pretty(&cfg).unwrap().contains("full_chroma"));
     }
 
     #[test]

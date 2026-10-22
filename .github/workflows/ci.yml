@@ -24,6 +24,22 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # The window's frontend (ui/) is embedded in playerstv.exe, so it's
+      # built before any Rust step compiles crates/ui.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      - name: Frontend (format, lint, test, build)
+        working-directory: ui
+        run: |
+          npm ci
+          npm run check
+          npm test
+          npm run build
+
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy

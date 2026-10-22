@@ -1,12 +1,13 @@
 # Builds the downloadable release zip from an existing release build:
 #
-#   cargo build --release
+#   (cd ui; npm ci; npm run build)   # frontend, embedded in playerstv.exe
 #   powershell -File scripts/fetch-ffmpeg.ps1
+#   cargo build --release --features bundle-ffmpeg   # ffmpeg embedded too
 #   powershell -File scripts/package.ps1 -Version v0.1.0
 #
 # Produces dist/playerstv-<version>-windows-x64.zip (+ .sha256) containing
-# playerstv.exe, ffmpeg.exe, the README and third-party notices. Unzip
-# anywhere and run playerstv.exe - it finds ffmpeg.exe next to itself.
+# playerstv.exe (tray, window and ffmpeg in one), a README for the person
+# running it, and third-party notices. Unzip anywhere and run playerstv.exe.
 param(
     [Parameter(Mandatory)][string]$Version,
     [string]$Root,
@@ -25,21 +26,27 @@ $ffmpeg = Join-Path $FfmpegDir "ffmpeg.exe"
 foreach ($f in $exe, $ffmpeg, (Join-Path $FfmpegDir "LICENSE.txt")) {
     if (-not (Test-Path $f)) { throw "Missing $f - build/fetch first (see the comment at the top of this script)." }
 }
+# Without --features bundle-ffmpeg the exe is ~15 MB and can't record on a
+# machine without ffmpeg.
+if ((Get-Item $exe).Length -le (Get-Item $ffmpeg).Length) {
+    throw "$exe doesn't contain ffmpeg - build it with: cargo build --release --features bundle-ffmpeg"
+}
 
 $name = "playerstv-$Version-windows-x64"
 $stage = Join-Path $OutDir $name
 if (Test-Path $stage) { Remove-Item -Recurse -Force $stage }
 New-Item -ItemType Directory -Force (Join-Path $stage "licenses") | Out-Null
 
-Copy-Item $exe, $ffmpeg $stage
-Copy-Item (Join-Path $Root "README.md") $stage
+Copy-Item $exe $stage
+(Get-Content -Raw (Join-Path $PSScriptRoot "README-tester.txt")).Replace("{VERSION}", $Version) |
+    Set-Content -Encoding utf8 (Join-Path $stage "README.txt")
 Copy-Item (Join-Path $FfmpegDir "LICENSE.txt") (Join-Path $stage "licenses\FFmpeg-LICENSE.txt")
 $ffmpegVersion = (& $ffmpeg -hide_banner -version | Select-Object -First 1)
 @"
 Third-party software shipped with playerstv
 ===========================================
 
-ffmpeg.exe
+ffmpeg.exe (built into playerstv.exe; unpacked to %LOCALAPPDATA%\playerstv\ffmpeg)
   $ffmpegVersion
   "Essentials" build by Gyan Doshi: https://www.gyan.dev/ffmpeg/builds/
   Licensed under the GNU GPL v3 (see FFmpeg-LICENSE.txt). It is a separate

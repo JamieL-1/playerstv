@@ -15,43 +15,9 @@ use ptv_capture::detect::{self, GameWindow};
 use ptv_core::config::{AudioSourceKind, Config};
 use ptv_core::ffmpeg_args::{self, AudioInput, CaptureTarget, RecordSpec};
 
-pub const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+pub use ptv_common::process::{bind_to_our_lifetime, CREATE_NO_WINDOW};
+
 const STDERR_TAIL: usize = 40;
-
-/// Ties a child process's lifetime to ours: every ffmpeg we start goes into a
-/// job object that Windows kills when our last handle to it closes, so a
-/// crash or `taskkill /F` of playerstv never leaves ffmpeg recording forever.
-pub fn bind_to_our_lifetime(child: &Child) {
-    use std::os::windows::io::AsRawHandle;
-    use std::sync::OnceLock;
-    use windows::Win32::Foundation::HANDLE;
-    use windows::Win32::System::JobObjects::{
-        AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation, SetInformationJobObject,
-        JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
-    };
-
-    // HANDLE isn't Send/Sync; store the raw value. Never closed on purpose.
-    static JOB: OnceLock<Option<usize>> = OnceLock::new();
-    let job = JOB.get_or_init(|| unsafe {
-        let job = CreateJobObjectW(None, None).ok()?;
-        let mut info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
-        info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-        SetInformationJobObject(
-            job,
-            JobObjectExtendedLimitInformation,
-            &info as *const _ as *const _,
-            std::mem::size_of_val(&info) as u32,
-        )
-        .ok()?;
-        Some(job.0 as usize)
-    });
-    if let Some(job) = job {
-        let process = HANDLE(child.as_raw_handle());
-        if let Err(e) = unsafe { AssignProcessToJobObject(HANDLE(*job as *mut _), process) } {
-            tracing::warn!("couldn't bind ffmpeg to our lifetime: {e}");
-        }
-    }
-}
 
 pub struct Recorder {
     child: Child,
@@ -62,7 +28,7 @@ pub struct Recorder {
     started: Instant,
     /// Titles of the audio tracks, in stream order.
     pub audio_titles: Vec<String>,
-    /// What's being encoded, e.g. "1900×1030 · 120 fps · H.264 4:4:4 · High quality".
+    /// What's being encoded, e.g. "1900×1030 · 120 fps · H.264 · High quality".
     pub video_summary: String,
 }
 

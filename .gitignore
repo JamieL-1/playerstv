@@ -2,3 +2,6 @@
 /vendor/ffmpeg/*.exe
 /vendor/ffmpeg/*.zip
 /dist
+
+# Tauri-generated schemas
+/crates/ui/gen

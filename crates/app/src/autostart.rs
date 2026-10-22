@@ -6,12 +6,15 @@ use winreg::RegKey;
 
 const RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
 const VALUE: &str = "playerstv";
+/// Starts the tray without opening the window.
+pub const BACKGROUND_FLAG: &str = "--background";
 
 pub fn apply(enabled: bool) -> Result<()> {
     let (run, _) = RegKey::predef(HKEY_CURRENT_USER).create_subkey(RUN_KEY)?;
     if enabled {
         let exe = std::env::current_exe()?;
-        run.set_value(VALUE, &format!("\"{}\"", exe.display()))?;
+        // Into the tray only; no window popping up at sign-in.
+        run.set_value(VALUE, &format!("\"{}\" {BACKGROUND_FLAG}", exe.display()))?;
     } else if run.get_raw_value(VALUE).is_ok() {
         run.delete_value(VALUE)?;
     }
