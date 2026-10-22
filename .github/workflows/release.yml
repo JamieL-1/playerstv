@@ -56,7 +56,7 @@ jobs:
           "tag=$tag" >> $env:GITHUB_OUTPUT
           Write-Host "Releasing $tag"
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: npm
