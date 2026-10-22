@@ -39,5 +39,6 @@ winreg = "0.56.0"
 default = ["custom-protocol"]
 custom-protocol = ["tauri/custom-protocol"]
 # Embed vendor/ffmpeg/ffmpeg.exe (about 100 MB), unpacked on first run, so the
-# release is a single exe. Release builds and scripts/package.ps1 use it.
-bundle-ffmpeg = []
+# release is a single exe. Release builds and scripts/package.ps1 use it, and
+# it turns on self-updating too: only release exes should replace themselves.
+bundle-ffmpeg = ["playerstv-tray/auto-update"]

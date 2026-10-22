@@ -8,11 +8,15 @@ mod export;
 mod recorder;
 mod supervisor;
 mod tray;
+mod updater;
 
 pub use autostart::BACKGROUND_FLAG;
 pub use tray::toast;
 /// Runs the app window instead of the tray (handled by the exe's `main`).
 pub const WINDOW_FLAG: &str = "--window";
+/// `--wait-pid N <args>`: wait for process N (the tray we're replacing after
+/// an update) to exit, then run as `<args>`.
+const WAIT_PID_FLAG: &str = "--wait-pid";
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -25,7 +29,13 @@ use windows::Win32::System::Threading::CreateMutexW;
 
 /// Everything except `--window`: `--smoke N`, `--background` (tray only, as
 /// used by "Start with Windows"), or nothing (tray plus the window).
-pub fn main(args: &[String]) {
+pub fn main(mut args: &[String]) {
+    if args.first().map(String::as_str) == Some(WAIT_PID_FLAG) {
+        if let Some(pid) = args.get(1).and_then(|s| s.parse().ok()) {
+            wait_for_exit(pid);
+        }
+        args = args.get(2..).unwrap_or_default();
+    }
     let result = match args.first().map(String::as_str) {
         Some("--smoke") => {
             let secs = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(15);
@@ -59,7 +69,39 @@ fn run_tray(show_window: bool) -> Result<()> {
     let cfg = Config::load_or_create(&paths::config_file())?;
     tracing::info!("playerstv {} starting, config {}", env!("CARGO_PKG_VERSION"), paths::config_file().display());
     tracing::info!("using ffmpeg at {}", paths::ffmpeg_exe().display());
+    if updater::finish_previous() && cfg.notifications {
+        toast(
+            &format!("playerstv updated to v{}", env!("CARGO_PKG_VERSION")),
+            "See what's new on the GitHub releases page.",
+        );
+    }
     tray::run(cfg, show_window)
+}
+
+/// Starts this exe again as `args` once the current process has exited (and
+/// released the single-instance mutex).
+fn relaunch_after_exit(args: &[&str]) {
+    let exe = match std::env::current_exe() {
+        Ok(exe) => exe,
+        Err(e) => return tracing::error!("couldn't find own exe: {e}"),
+    };
+    let pid = std::process::id().to_string();
+    if let Err(e) = std::process::Command::new(&exe).arg(WAIT_PID_FLAG).arg(&pid).args(args).spawn() {
+        tracing::error!("couldn't restart {}: {e}", exe.display());
+    }
+}
+
+fn wait_for_exit(pid: u32) {
+    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::System::Threading::{OpenProcess, WaitForSingleObject, PROCESS_SYNCHRONIZE};
+    // Already gone if it can't be opened.
+    if let Ok(process) = unsafe { OpenProcess(PROCESS_SYNCHRONIZE, false, pid) } {
+        unsafe {
+            // Saving a long session on shutdown can take a while.
+            WaitForSingleObject(process, 120_000);
+            let _ = CloseHandle(process);
+        }
+    }
 }
 
 /// `playerstv --smoke N`: headless end-to-end check. Waits for the game,

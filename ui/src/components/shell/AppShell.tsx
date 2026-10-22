@@ -8,6 +8,7 @@ import { useStatus } from "@/hooks/useStatus";
 import { countKinds, gameFolder } from "@/lib/library";
 import { cn } from "@/lib/utils";
 import { RecordingPanel } from "./RecordingPanel";
+import { UpdateBanner } from "./UpdateBanner";
 import { ServerRail } from "./ServerRail";
 
 /** Discord layout: server rail | channel column (+ recording panel) | page. */
@@ -68,6 +69,7 @@ function ChannelColumn(props: {
           ))}
         </div>
       </ScrollArea>
+      <UpdateBanner snapshot={snapshot} />
       <RecordingPanel snapshot={snapshot} />
     </aside>
   );

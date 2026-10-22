@@ -8,16 +8,25 @@ anyhow.workspace = true
 chrono.workspace = true
 crossbeam-channel.workspace = true
 global-hotkey = "0.9.0"
+minisign-verify = "0.3.0"
 notify = "8.2.0"
 playerstv-capture = { path = "../capture" }
 playerstv-core = { path = "../core" }
 playerstv-common = { path = "../common" }
+semver = "1.0.28"
 serde = { workspace = true, features = ["derive"] }
 serde_json = "1.0.154"
+sha2 = "0.10.9"
 tauri-winrt-notification = "0.8.1"
 tracing.workspace = true
 tracing-appender = "0.2.5"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 tray-icon = "0.26.1"
+ureq = { version = "3.5.0", features = ["json"] }
 windows = { version = "0.62", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_System_Threading", "Win32_System_Console", "Win32_System_JobObjects", "Win32_Security", "Win32_System_Pipes", "Win32_Storage_FileSystem", "Win32_System_IO"] }
 winreg = "0.56.0"
+
+[features]
+# Check GitHub for new releases and install them (crates/app/src/updater.rs).
+# Release builds get it through playerstv's `bundle-ffmpeg` feature.
+auto-update = []

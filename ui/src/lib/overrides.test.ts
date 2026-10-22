@@ -11,6 +11,7 @@ const base: Config = {
   record_full_session: false,
   start_with_windows: false,
   notifications: true,
+  auto_update: true,
   storage_limit_gb: null,
   video: { resolution: "native", fps: 60, codec: "h264", quality: "high", bitrate_cap_mbps: 40 },
   audio: {

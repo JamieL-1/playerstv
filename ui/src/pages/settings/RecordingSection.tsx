@@ -82,6 +82,12 @@ export function RecordingSection() {
         <Switch checked={draft.notifications} onCheckedChange={(v) => update((c) => ({ ...c, notifications: v }))} />
       </SettingRow>
       <SettingRow
+        label="Update automatically"
+        description="Download new versions in the background. They're installed when playerstv isn't recording, or the next time you open it."
+      >
+        <Switch checked={draft.auto_update} onCheckedChange={(v) => update((c) => ({ ...c, auto_update: v }))} />
+      </SettingRow>
+      <SettingRow
         label="Restore default settings"
         description="Recording, video, audio, hotkeys and storage go back to how playerstv ships, and game customizations are cleared. Your games, output folder and appearance stay."
       >

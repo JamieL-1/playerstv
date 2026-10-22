@@ -8,6 +8,7 @@ export const backend = {
   getStatus: () => invoke<Snapshot | null>("get_status"),
   saveClip: () => invoke<Snapshot>("save_clip"),
   toggleSession: () => invoke<Snapshot>("toggle_session"),
+  restartToUpdate: () => invoke<Snapshot>("restart_to_update"),
   startTray: () => invoke<void>("start_tray"),
   quitApp: () => invoke<void>("quit_app"),
 

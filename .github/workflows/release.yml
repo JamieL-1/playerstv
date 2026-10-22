@@ -104,6 +104,36 @@ jobs:
       - name: Package
         run: ./scripts/package.ps1 -Version ${{ steps.version.outputs.tag }}
 
+      # The installed apps update themselves from latest.json (see
+      # crates/app/src/updater.rs); they only accept an exe signed with the
+      # release key, kept in the MINISIGN_KEY secret.
+      - name: Sign for self-update
+        env:
+          MINISIGN_KEY: ${{ secrets.MINISIGN_KEY }}
+        run: |
+          if (-not $env:MINISIGN_KEY) {
+            if ("${{ inputs.dry_run }}" -eq "true") {
+              Write-Host "::warning::No MINISIGN_KEY secret: skipping the self-update files in this dry run."
+              exit 0
+            }
+            throw "The MINISIGN_KEY secret is missing: installed apps couldn't update to this release."
+          }
+          $dir = "${{ runner.temp }}/minisign"
+          New-Item -ItemType Directory -Force $dir | Out-Null
+          $zip = "$dir/minisign.zip"
+          Invoke-WebRequest https://github.com/jedisct1/minisign/releases/download/0.12/minisign-0.12-win64.zip -OutFile $zip
+          if ((Get-FileHash $zip -Algorithm SHA256).Hash -ne "37B600344E20C19314B2E82813DB2BFDCC408B77B876F7727889DBD46D539479") {
+            throw "minisign download doesn't match its pinned SHA-256"
+          }
+          Expand-Archive $zip $dir -Force
+          $key = "${{ runner.temp }}/minisign.key"
+          [IO.File]::WriteAllText($key, $env:MINISIGN_KEY)
+          try {
+            ./scripts/sign-release.ps1 -Version ${{ steps.version.outputs.tag }} -KeyFile $key -Minisign "$dir/minisign-win64/x86_64/minisign.exe"
+          } finally {
+            Remove-Item $key
+          }
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
@@ -111,6 +141,9 @@ jobs:
           path: |
             dist/*.zip
             dist/*.sha256
+            dist/*.exe
+            dist/*.minisig
+            dist/latest.json
 
       # Publishing is ordered so main is never bumped without a release:
       # 1. push only the tag (uploads the release commit, leaves main alone)
@@ -147,6 +180,8 @@ jobs:
           $notes = @"
           ## Download
 
+          Already using playerstv v0.1.1 or newer? It updates itself when you open it.
+
           1. Download **playerstv-$env:TAG-windows-x64.zip** below and unzip it anywhere.
           2. Run ``playerstv.exe``. The window opens, and closing it leaves playerstv recording from the system tray; left-click the tray icon to bring the window back.
 
@@ -156,7 +191,8 @@ jobs:
 
           SHA-256: ``$((Get-Content "$zip.sha256").Split(' ')[0])``
           "@
-          gh release create $env:TAG $zip "$zip.sha256" `
+          $exe = "dist/playerstv-$env:TAG-windows-x64.exe"
+          gh release create $env:TAG $zip "$zip.sha256" $exe "$exe.minisig" dist/latest.json `
             --verify-tag `
             --draft `
             --title "playerstv $env:TAG" `

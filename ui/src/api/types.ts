@@ -85,6 +85,7 @@ export interface Config {
   record_full_session: boolean;
   start_with_windows: boolean;
   notifications: boolean;
+  auto_update: boolean;
   storage_limit_gb: number | null;
   video: VideoConfig;
   audio: AudioConfig;
@@ -105,6 +106,8 @@ export interface Snapshot {
   session_hotkey: string;
   output_dir: string;
   last_saved: string | null;
+  /** Version of a downloaded update that a restart would install. */
+  update_ready: string | null;
 }
 
 /** Ranges shared with crates/core/src/config.rs (sanitize). */

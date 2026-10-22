@@ -474,6 +474,9 @@ pub struct Config {
     pub start_with_windows: bool,
     /// Show a toast when a clip is saved.
     pub notifications: bool,
+    /// Download new releases in the background and install them (release
+    /// builds only; see crates/app/src/updater.rs).
+    pub auto_update: bool,
     /// Keep saved clips + sessions under this many GB by deleting the oldest.
     /// `None` = no limit.
     pub storage_limit_gb: Option<u32>,
@@ -494,6 +497,7 @@ impl Default for Config {
             record_full_session: false,
             start_with_windows: false,
             notifications: true,
+            auto_update: true,
             storage_limit_gb: None,
             video: VideoConfig::default(),
             audio: AudioConfig::default(),
@@ -620,6 +624,8 @@ mod tests {
         assert_eq!(cfg.video.fps, 120);
         assert_eq!(cfg.video.codec, Codec::H264);
         assert_eq!(cfg.games.len(), 3);
+        // Configs from before auto-update existed get it switched on.
+        assert!(cfg.auto_update);
     }
 
     #[test]

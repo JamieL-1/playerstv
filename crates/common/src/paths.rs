@@ -50,6 +50,11 @@ pub fn icons_dir() -> PathBuf {
     env_dir("LOCALAPPDATA").join(instance_name("icons"))
 }
 
+/// Where the updater downloads new releases before installing them.
+pub fn update_dir() -> PathBuf {
+    env_dir("LOCALAPPDATA").join(instance_name("update"))
+}
+
 pub fn log_dir() -> PathBuf {
     env_dir("LOCALAPPDATA").join(instance_name("logs"))
 }
