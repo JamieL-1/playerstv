@@ -11,6 +11,7 @@ const base: Config = {
   start_with_windows: false,
   notifications: true,
   auto_update: true,
+  close_action: "ask",
   storage_limit_gb: null,
   video: { resolution: "native", fps: 60, codec: "h264", quality: "high", bitrate_cap_mbps: null },
   audio: {
@@ -49,6 +50,14 @@ describe("mergeExternalChange", () => {
     expect(merged.games.find((g) => g.id === "cs2")!.enabled).toBe(false);
     expect(merged.ui.accent).toBe("#eb459e");
   });
+
+  it("takes a close action saved from the close dialog, unless it was edited here", () => {
+    const draft = { ...base, buffer_seconds: 90 };
+    const incoming: Config = { ...base, close_action: "tray" };
+    expect(mergeExternalChange(draft, base, incoming).close_action).toBe("tray");
+    const edited: Config = { ...draft, close_action: "quit" };
+    expect(mergeExternalChange(edited, base, incoming).close_action).toBe("quit");
+  });
 });
 
 describe("isDirty", () => {
@@ -78,5 +87,20 @@ describe("restoreDefaults", () => {
     expect(restored.games.map((g) => g.id)).toEqual(["runelite", "cs2"]);
     expect(restored.games[1]!.enabled).toBe(false);
     expect("overrides" in restored.games[0]!).toBe(false);
+  });
+
+  it("keeps the app settings", () => {
+    const current: Config = {
+      ...base,
+      start_with_windows: true,
+      notifications: false,
+      auto_update: false,
+      close_action: "tray",
+    };
+    const restored = restoreDefaults(current, base);
+    expect(restored.start_with_windows).toBe(true);
+    expect(restored.notifications).toBe(false);
+    expect(restored.auto_update).toBe(false);
+    expect(restored.close_action).toBe("tray");
   });
 });

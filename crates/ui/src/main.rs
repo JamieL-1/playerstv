@@ -57,15 +57,16 @@ fn run_window() {
             settings::watch(app.handle().clone());
             Ok(())
         })
-        .on_window_event(|_, event| {
-            if let tauri::WindowEvent::CloseRequested { .. } = event {
-                // Closing the window quits playerstv, tray included. Sent
-                // before the window goes, so the process can't exit first.
-                let _ = ptv_common::control::request(ptv_common::control::Request::Quit);
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                status::close_requested(window, api);
             }
         })
         .invoke_handler(tauri::generate_handler![
             status::quit_app,
+            status::close_to_tray,
+            status::app_version,
+            status::check_for_updates,
             status::get_status,
             status::save_clip,
             status::toggle_session,
@@ -76,6 +77,7 @@ fn run_window() {
             settings::default_config,
             settings::set_game_enabled,
             settings::set_ui_config,
+            settings::set_close_action,
             settings::validate_hotkey,
             settings::storage_usage,
             settings::list_mics,

@@ -21,9 +21,11 @@ import { AppearanceSection } from "./AppearanceSection";
 import { AudioSection } from "./AudioSection";
 import { GameSettingsPage } from "./GameSettingsPage";
 import { GamesSection } from "./GamesSection";
+import { GeneralSection } from "./GeneralSection";
 import { HotkeysSection, RecordingSection } from "./RecordingSection";
 import { SettingsProvider, useSettings } from "./SettingsContext";
 import { StorageSection } from "./StorageSection";
+import { UpdatesSection } from "./UpdatesSection";
 import { VideoSection } from "./VideoSection";
 
 interface SectionDef {
@@ -46,7 +48,11 @@ const GROUPS: { label: string; items: SectionDef[] }[] = [
   },
   {
     label: "App settings",
-    items: [{ id: "appearance", label: "Appearance", Component: AppearanceSection }],
+    items: [
+      { id: "general", label: "General", Component: GeneralSection },
+      { id: "appearance", label: "Appearance", Component: AppearanceSection },
+      { id: "updates", label: "Updates", Component: UpdatesSection },
+    ],
   },
 ];
 
@@ -139,7 +145,8 @@ function SettingsScreen() {
 
 /**
  * Quits the whole app (tray included), like Discord's "Log Out" at the bottom
- * of its settings. Closing the window only hides it; recording carries on.
+ * of its settings. The close button can keep recording in the tray instead
+ * (Settings → General).
  */
 function QuitButton() {
   const status = useStatus();

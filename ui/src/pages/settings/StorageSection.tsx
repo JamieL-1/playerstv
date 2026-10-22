@@ -1,6 +1,8 @@
 import { useQuery } from "@tanstack/react-query";
+import { FolderOpen } from "lucide-react";
 import { backend } from "@/api/backend";
 import { LIMITS } from "@/api/types";
+import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Progress } from "@/components/ui/progress";
 import { Slider } from "@/components/ui/slider";
@@ -34,8 +36,26 @@ export function StorageSection() {
 
   return (
     <>
-      <SectionTitle title="Storage" description="Keep recordings from filling your drive." />
-      <div className="mb-2 rounded-lg bg-card p-4">
+      <SectionTitle title="Storage" description="Where recordings are saved, and how much space they can use." />
+      <SettingRow label="Output folder" description="Clips and sessions are saved in a folder per game." stacked>
+        <div className="flex gap-2">
+          <Input
+            value={draft.output_dir}
+            onChange={(e) => update((c) => ({ ...c, output_dir: e.target.value }))}
+            className="font-mono text-sm"
+          />
+          <Button
+            variant="secondary"
+            onClick={async () => {
+              const dir = await backend.pickFolder(draft.output_dir);
+              if (dir) update((c) => ({ ...c, output_dir: dir }));
+            }}
+          >
+            <FolderOpen /> Browse
+          </Button>
+        </div>
+      </SettingRow>
+      <div className="mb-2 mt-4 rounded-lg bg-card p-4">
         <div className="mb-2 flex justify-between text-sm">
           <span>
             Using <b>{formatSize(used)}</b>

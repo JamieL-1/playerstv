@@ -449,6 +449,20 @@ impl UiConfig {
     }
 }
 
+/// What the window's close button does. The tray keeps recording (and the
+/// hotkeys working) unless playerstv quits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum CloseAction {
+    /// Ask each time.
+    #[default]
+    Ask,
+    /// Close the window; recording carries on in the tray.
+    Tray,
+    /// Quit playerstv, tray included.
+    Quit,
+}
+
 pub const MAX_VOLUME_PERCENT: u32 = 400;
 pub const MAX_STORAGE_LIMIT_GB: u32 = 20_000;
 // Shared with the settings UI so its sliders accept every value a config can
@@ -477,6 +491,8 @@ pub struct Config {
     /// Download new releases in the background and install them (release
     /// builds only; see crates/app/src/updater.rs).
     pub auto_update: bool,
+    /// What closing the window does. Only the window reads this.
+    pub close_action: CloseAction,
     /// Keep saved clips + sessions under this many GB by deleting the oldest.
     /// `None` = no limit.
     pub storage_limit_gb: Option<u32>,
@@ -498,6 +514,7 @@ impl Default for Config {
             start_with_windows: false,
             notifications: true,
             auto_update: true,
+            close_action: CloseAction::Ask,
             storage_limit_gb: None,
             video: VideoConfig::default(),
             audio: AudioConfig::default(),
@@ -626,6 +643,8 @@ mod tests {
         assert_eq!(cfg.games.len(), 3);
         // Configs from before auto-update existed get it switched on.
         assert!(cfg.auto_update);
+        // ...and ask what the close button should do.
+        assert_eq!(cfg.close_action, CloseAction::Ask);
     }
 
     #[test]

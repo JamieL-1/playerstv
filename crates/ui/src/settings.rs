@@ -7,7 +7,7 @@ use std::time::Duration;
 use global_hotkey::hotkey::HotKey;
 use notify::{RecursiveMode, Watcher};
 use ptv_common::paths;
-use ptv_core::config::{Config, UiConfig};
+use ptv_core::config::{CloseAction, Config, UiConfig};
 use tauri::{AppHandle, Emitter};
 use tauri_plugin_dialog::DialogExt;
 
@@ -80,6 +80,15 @@ pub async fn set_ui_config(ui: UiConfig) -> Result<UiConfig, String> {
     cfg.sanitize();
     save(&cfg)?;
     Ok(cfg.ui)
+}
+
+/// "Don't ask again" in the close dialog, saved without touching any
+/// unsaved edits in Settings.
+#[tauri::command]
+pub async fn set_close_action(action: CloseAction) -> Result<(), String> {
+    let mut cfg = load()?;
+    cfg.close_action = action;
+    save(&cfg)
 }
 
 #[derive(serde::Serialize)]
