@@ -6,6 +6,7 @@ import {
   FolderOpen,
   LayoutGrid,
   MoreHorizontal,
+  Pencil,
   Play,
   Radio,
   Scissors,
@@ -46,11 +47,13 @@ import {
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { NameDialog } from "@/components/library/NameDialog";
 import { useConfig } from "@/hooks/useConfig";
-import { useLibrary } from "@/hooks/useLibrary";
+import { useLibrary, useRename } from "@/hooks/useLibrary";
 import { formatElapsed, formatSize, nominalFps } from "@/lib/format";
 import {
   canPlay,
+  displayName,
   filterRecordings,
   formatWhen,
   gameFolder,
@@ -79,6 +82,7 @@ export function LibraryPage() {
   const [search, setSearch] = useState("");
   const [sort, setSort] = useState<SortOrder>("newest");
   const [toDelete, setToDelete] = useState<Recording | null>(null);
+  const [toRename, setToRename] = useState<Recording | null>(null);
   const deferredSearch = useDeferredValue(search);
 
   const games = config?.games ?? [];
@@ -90,7 +94,7 @@ export function LibraryPage() {
     [all, folder, kind, deferredSearch, sort],
   );
   const heading = HEADINGS[kind ?? "all"];
-  const actions = useActions(setToDelete);
+  const actions = useActions(setToDelete, setToRename);
 
   let body: React.ReactNode;
   if (library.isPending) {
@@ -160,6 +164,7 @@ export function LibraryPage() {
       </header>
       <ScrollArea className="min-h-0 flex-1">{body}</ScrollArea>
       <DeleteDialog rec={toDelete} onClose={() => setToDelete(null)} />
+      <RenameDialog rec={toRename} onClose={() => setToRename(null)} />
     </>
   );
 }
@@ -177,7 +182,7 @@ interface Action {
   run: (rec: Recording) => void;
 }
 
-function useActions(confirmDelete: (rec: Recording) => void): Action[] {
+function useActions(confirmDelete: (rec: Recording) => void, rename: (rec: Recording) => void): Action[] {
   const navigate = useNavigate();
   const fail = (e: unknown) => toast.error(String(e));
   return [
@@ -188,6 +193,7 @@ function useActions(confirmDelete: (rec: Recording) => void): Action[] {
       icon: Scissors,
       run: (r) => navigate(`/watch?path=${encodeURIComponent(r.path)}&trim=1`),
     },
+    { id: "rename", label: "Rename", icon: Pencil, run: rename },
     {
       id: "explorer",
       label: "Show in Explorer",
@@ -217,7 +223,13 @@ function RecordingCard({ rec, game, actions }: { rec: Recording; game: string | 
   const duration = rec.info?.duration_s;
   const video = rec.info?.video;
   const writing = rec.info === null;
-  const details = [game, formatSize(rec.size), video && `${video.height}p${nominalFps(video.fps)}`].filter(Boolean);
+  const when = formatWhen(rec.modified);
+  const details = [
+    rec.custom_name && when,
+    game,
+    formatSize(rec.size),
+    video && `${video.height}p${nominalFps(video.fps)}`,
+  ].filter(Boolean);
 
   return (
     <ContextMenu>
@@ -225,7 +237,7 @@ function RecordingCard({ rec, game, actions }: { rec: Recording; game: string | 
         <div
           role="button"
           tabIndex={0}
-          aria-label={`Play ${rec.name}`}
+          aria-label={`Play ${displayName(rec)}`}
           onClick={() => play(rec, navigate)}
           onKeyDown={(e) => {
             if (e.key === "Enter" || e.key === " ") {
@@ -264,7 +276,9 @@ function RecordingCard({ rec, game, actions }: { rec: Recording; game: string | 
           </div>
           <div className="flex items-start gap-1 p-3 pr-1.5">
             <div className="min-w-0 flex-1">
-              <div className="truncate text-[15px] font-semibold">{formatWhen(rec.modified)}</div>
+              <div className="truncate text-[15px] font-semibold" title={rec.custom_name ?? undefined}>
+                {rec.custom_name ?? when}
+              </div>
               <div className="truncate text-xs text-muted-foreground">{details.join(" · ")}</div>
             </div>
             <DropdownMenu open={menuOpen} onOpenChange={setMenuOpen}>
@@ -370,7 +384,8 @@ function DeleteDialog({ rec, onClose }: { rec: Recording | null; onClose: () => 
         <AlertDialogHeader>
           <AlertDialogTitle>Delete {rec?.kind === "session" ? "session" : "clip"}?</AlertDialogTitle>
           <AlertDialogDescription>
-            <span className="font-medium text-foreground">{rec?.name}</span> will be moved to the Recycle Bin.
+            <span className="font-medium text-foreground">{rec && displayName(rec)}</span> will be moved to the Recycle
+            Bin.
           </AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter>
@@ -391,5 +406,23 @@ function DeleteDialog({ rec, onClose }: { rec: Recording | null; onClose: () => 
         </AlertDialogFooter>
       </AlertDialogContent>
     </AlertDialog>
+  );
+}
+
+function RenameDialog({ rec, onClose }: { rec: Recording | null; onClose: () => void }) {
+  const rename = useRename();
+  const initial = rec ? displayName(rec) : "";
+  return (
+    <NameDialog
+      open={rec !== null}
+      title={`Rename ${rec?.kind === "session" ? "session" : "clip"}`}
+      description="The file is renamed too, keeping its date and time at the end."
+      initial={initial}
+      confirm="Rename"
+      onClose={onClose}
+      onSubmit={async (name) => {
+        if (rec && name !== initial) await rename(rec, name);
+      }}
+    />
   );
 }

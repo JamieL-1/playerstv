@@ -1,11 +1,23 @@
 import { describe, expect, it } from "vitest";
 import type { Recording } from "@/api/types";
-import { canPlay, countKinds, filterRecordings, formatWhen, gameName, parseKind, sortRecordings } from "./library";
+import {
+  canPlay,
+  countKinds,
+  defaultClipName,
+  displayName,
+  filterRecordings,
+  formatWhen,
+  gameName,
+  nameError,
+  parseKind,
+  sortRecordings,
+} from "./library";
 
 function rec(name: string, over: Partial<Recording> = {}): Recording {
   return {
     path: `C:\\v\\${name}`,
     name,
+    custom_name: null,
     game: "RuneLite",
     kind: name.includes("_session_") ? "session" : "clip",
     size: 100,
@@ -102,5 +114,28 @@ describe("helpers", () => {
     expect(formatWhen(at(new Date(2026, 9, 22, 9, 5)), now)).toMatch(/^Today at /);
     expect(formatWhen(at(new Date(2026, 9, 21, 23, 59)), now)).toMatch(/^Yesterday at /);
     expect(formatWhen(at(new Date(2026, 9, 1, 8, 0)), now)).not.toMatch(/day at/);
+  });
+});
+
+describe("names", () => {
+  it("shows the custom name, else the file name", () => {
+    expect(displayName(rec("RuneLite_2026-10-21_14-03-22.mp4"))).toBe("RuneLite_2026-10-21_14-03-22");
+    expect(displayName(rec("Big fight_2026-10-21_14-03-22.mp4", { custom_name: "Big fight" }))).toBe("Big fight");
+  });
+
+  it("defaults to the game and the time, like the backend", () => {
+    expect(defaultClipName("RuneLite", new Date(2026, 9, 3, 4, 5, 6))).toBe("RuneLite_2026-10-03_04-05-06");
+  });
+
+  it("rejects names that can't be file names", () => {
+    expect(nameError("Big fight")).toBeNull();
+    expect(nameError("  Big fight.mp4 ")).toBeNull();
+    expect(nameError("   ")).toBe("Enter a name");
+    expect(nameError(".mp4")).toBe("Enter a name");
+    expect(nameError("a/b")).toBe("Names can't contain /");
+    expect(nameError('say "gg"')).toBe("Names can't contain \"");
+    expect(nameError("tab\there")).toMatch(/control/);
+    expect(nameError("x".repeat(100))).toBeNull();
+    expect(nameError("x".repeat(101))).toMatch(/at most 100/);
   });
 });

@@ -20,13 +20,33 @@ pub struct Recording {
     pub modified: SystemTime,
 }
 
-/// `RuneLite_2026-10-21_14-03-22.mp4`, `RuneLite_session_2026-10-21_14-03-22 (2).mp4`, …
+/// `RuneLite_2026-10-21_14-03-22.mp4`, `RuneLite_session_2026-10-21_14-03-22 (2).mp4`,
+/// `Big fight_2026-10-21_14-03-22.mp4`, …
 pub fn is_recording_file(name: &str) -> bool {
+    split_name(name).is_some()
+}
+
+/// A recording's file name as (label, timestamp): `Big fight_2026-10-21_14-03-22 (2).mp4`
+/// → `("Big fight", "2026-10-21_14-03-22")`. The label of an unnamed one is
+/// `<Game>` or `<Game>_session`.
+pub fn split_name(name: &str) -> Option<(&str, &str)> {
     static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| {
-        Regex::new(r"^.+_(session_)?\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}( \(\d+\))?\.mp4$").expect("valid regex")
-    })
-    .is_match(name)
+    let re = RE.get_or_init(|| {
+        Regex::new(r"^(.+)_(\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2})( \(\d+\))?\.mp4$").expect("valid regex")
+    });
+    let caps = re.captures(name)?;
+    Some((caps.get(1)?.as_str(), caps.get(2)?.as_str()))
+}
+
+/// The name the user gave the recording at `path`, if any: its label,
+/// unless that's the default for its game folder.
+pub fn custom_name(path: &Path) -> Option<&str> {
+    let (label, _) = split_name(path.file_name()?.to_str()?)?;
+    let parent = path.parent()?;
+    let game_dir = if parent.file_name()? == "Sessions" { parent.parent()? } else { parent };
+    let game = game_dir.file_name()?.to_str()?;
+    let default = label == game || label.strip_suffix("_session") == Some(game);
+    (!default).then_some(label)
 }
 
 /// Every recording under `output_dir` (missing folders just mean none).
@@ -61,8 +81,10 @@ pub fn total_size(recs: &[Recording]) -> u64 {
 
 /// The recordings to delete, oldest first, to bring the total to at most
 /// `limit` bytes. The newest recording is never deleted, even if it alone
-/// is over the limit: it's almost always the one that was just saved.
-pub fn plan_cleanup(recs: &[Recording], limit: u64) -> Vec<Recording> {
+/// is over the limit: it's almost always the one that was just saved. With
+/// `keep_named`, neither are recordings the user named (see [`custom_name`]),
+/// though they still count toward the total.
+pub fn plan_cleanup(recs: &[Recording], limit: u64, keep_named: bool) -> Vec<Recording> {
     let mut by_age: Vec<&Recording> = recs.iter().collect();
     by_age.sort_by_key(|r| r.modified);
     let mut total = total_size(recs);
@@ -71,6 +93,9 @@ pub fn plan_cleanup(recs: &[Recording], limit: u64) -> Vec<Recording> {
     for r in by_age.iter().take(by_age.len().saturating_sub(1)) {
         if total <= limit {
             break;
+        }
+        if keep_named && custom_name(&r.path).is_some() {
+            continue;
         }
         total -= r.size;
         delete.push((*r).clone());
@@ -109,30 +134,62 @@ mod tests {
         assert!(!is_recording_file("RuneLite_2026-10-21_14-03-22.mp4.concat.txt"));
         assert!(!is_recording_file("RuneLite_2026-10-21_14-03-22.mkv"));
         assert!(!is_recording_file("RuneLite_2026-10-21.mp4"));
+        assert!(is_recording_file("Big fight!_2026-10-21_14-03-22.mp4"));
+    }
+
+    #[test]
+    fn names_split_into_label_and_timestamp() {
+        assert_eq!(split_name("RuneLite_2026-10-21_14-03-22.mp4"), Some(("RuneLite", "2026-10-21_14-03-22")));
+        assert_eq!(
+            split_name("RuneLite_session_2026-10-21_14-03-22 (2).mp4"),
+            Some(("RuneLite_session", "2026-10-21_14-03-22"))
+        );
+        assert_eq!(split_name("Big_fight_2026-10-21_14-03-22.mp4"), Some(("Big_fight", "2026-10-21_14-03-22")));
+        assert_eq!(split_name("holiday.mp4"), None);
+    }
+
+    #[test]
+    fn custom_names_are_labels_other_than_the_default() {
+        let game = Path::new(r"C:\out\RuneLite");
+        assert_eq!(custom_name(&game.join("RuneLite_2026-10-21_14-03-22.mp4")), None);
+        assert_eq!(custom_name(&game.join("Sessions").join("RuneLite_session_2026-10-21_14-03-22.mp4")), None);
+        assert_eq!(custom_name(&game.join("Big fight_2026-10-21_14-03-22 (2).mp4")), Some("Big fight"));
+        assert_eq!(custom_name(&game.join("Sessions").join("Raid night_2026-10-21_14-03-22.mp4")), Some("Raid night"));
+    }
+
+    #[test]
+    fn keep_named_spares_named_recordings() {
+        let named = |n: &str, size, age| rec(&format!(r"C:\out\RuneLite\{n}_2026-10-21_14-03-22.mp4"), size, age);
+        let recs = vec![named("RuneLite", 3, 10), named("Keeper", 4, 300), named("RuneLite", 5, 200)];
+        // total 12, limit 7: the oldest is named, so the next oldest goes instead.
+        let deleted: Vec<_> = plan_cleanup(&recs, 7, true).into_iter().map(|r| r.size).collect();
+        assert_eq!(deleted, [5]);
+        let deleted: Vec<_> = plan_cleanup(&recs, 7, false).into_iter().map(|r| r.size).collect();
+        assert_eq!(deleted, [4, 5]);
     }
 
     #[test]
     fn deletes_oldest_until_under_limit() {
         let recs = vec![rec("new", 3, 10), rec("oldest", 4, 300), rec("mid", 5, 200), rec("old", 2, 250)];
         // total 14, limit 8: drop oldest (4) → 10, then old (2) → 8.
-        let names: Vec<_> = plan_cleanup(&recs, 8).into_iter().map(|r| r.path).collect();
+        let names: Vec<_> = plan_cleanup(&recs, 8, false).into_iter().map(|r| r.path).collect();
         assert_eq!(names, [PathBuf::from("oldest"), PathBuf::from("old")]);
     }
 
     #[test]
     fn nothing_to_do_under_limit() {
         let recs = vec![rec("a", 3, 10), rec("b", 4, 20)];
-        assert!(plan_cleanup(&recs, 7).is_empty());
-        assert!(plan_cleanup(&[], 0).is_empty());
+        assert!(plan_cleanup(&recs, 7, false).is_empty());
+        assert!(plan_cleanup(&[], 0, false).is_empty());
     }
 
     #[test]
     fn never_deletes_the_newest() {
         // A single recording bigger than the limit survives…
-        assert!(plan_cleanup(&[rec("huge", 50, 1)], 10).is_empty());
+        assert!(plan_cleanup(&[rec("huge", 50, 1)], 10, false).is_empty());
         // …and with others, everything older goes but the newest stays.
         let recs = vec![rec("huge-new", 50, 1), rec("a", 3, 100), rec("b", 4, 200)];
-        let kept: Vec<_> = plan_cleanup(&recs, 10).into_iter().map(|r| r.path).collect();
+        let kept: Vec<_> = plan_cleanup(&recs, 10, false).into_iter().map(|r| r.path).collect();
         assert_eq!(kept, [PathBuf::from("b"), PathBuf::from("a")]);
     }
 

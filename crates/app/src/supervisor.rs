@@ -526,11 +526,16 @@ fn begin_session(active: &mut Active) {
 struct StoragePolicy {
     output_dir: PathBuf,
     limit: Option<u64>,
+    keep_named: bool,
 }
 
 impl StoragePolicy {
     fn of(cfg: &Config) -> Self {
-        Self { output_dir: cfg.output_dir.clone(), limit: cfg.storage_limit_bytes() }
+        Self {
+            output_dir: cfg.output_dir.clone(),
+            limit: cfg.storage_limit_bytes(),
+            keep_named: cfg.keep_named_recordings,
+        }
     }
 }
 
@@ -547,7 +552,7 @@ fn enforce_storage_limit(policy: &SharedStoragePolicy, sink: &EventSink) {
     let Some(limit) = policy.limit else { return };
 
     let recs = storage::scan(&policy.output_dir);
-    let plan = storage::plan_cleanup(&recs, limit);
+    let plan = storage::plan_cleanup(&recs, limit, policy.keep_named);
     let (mut count, mut bytes) = (0, 0);
     for r in &plan {
         match std::fs::remove_file(&r.path) {
@@ -648,10 +653,10 @@ mod tests {
 
         // An export captured the policy while there was no limit…
         let shared: SharedStoragePolicy =
-            Arc::new(std::sync::Mutex::new(StoragePolicy { output_dir: out.clone(), limit: None }));
+            Arc::new(std::sync::Mutex::new(StoragePolicy { output_dir: out.clone(), limit: None, keep_named: false }));
         let captured_by_export = shared.clone();
         // …then the user set a limit (20 bytes) before it finished.
-        *shared.lock().unwrap() = StoragePolicy { output_dir: out.clone(), limit: Some(20) };
+        *shared.lock().unwrap() = StoragePolicy { output_dir: out.clone(), limit: Some(20), keep_named: false };
         enforce_storage_limit(&captured_by_export, &sink);
 
         let left: Vec<String> =

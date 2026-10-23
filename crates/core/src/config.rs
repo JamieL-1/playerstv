@@ -496,6 +496,8 @@ pub struct Config {
     /// Keep saved clips + sessions under this many GB by deleting the oldest.
     /// `None` = no limit.
     pub storage_limit_gb: Option<u32>,
+    /// Never delete recordings the user has named to stay under the limit.
+    pub keep_named_recordings: bool,
     pub video: VideoConfig,
     pub audio: AudioConfig,
     pub games: Vec<GameProfile>,
@@ -516,6 +518,7 @@ impl Default for Config {
             auto_update: true,
             close_action: CloseAction::Ask,
             storage_limit_gb: None,
+            keep_named_recordings: false,
             video: VideoConfig::default(),
             audio: AudioConfig::default(),
             games: profile::builtins(),

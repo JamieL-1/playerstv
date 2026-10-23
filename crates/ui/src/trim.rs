@@ -46,15 +46,22 @@ enum Done {
     Cancelled { id: u64 },
 }
 
-/// Starts exporting `start..end` seconds of `path`; returns the export id.
+/// Starts exporting `start..end` seconds of `path`, saved as `name` (see
+/// `clip::named_path`) or the default name; returns the export id.
 #[tauri::command]
-pub async fn export_trim(app: AppHandle, path: String, start: f64, end: f64) -> Result<u64, String> {
-    tauri::async_runtime::spawn_blocking(move || start_export(&app, &path, start, end))
+pub async fn export_trim(
+    app: AppHandle,
+    path: String,
+    start: f64,
+    end: f64,
+    name: Option<String>,
+) -> Result<u64, String> {
+    tauri::async_runtime::spawn_blocking(move || start_export(&app, &path, start, end, name.as_deref()))
         .await
         .map_err(|e| e.to_string())?
 }
 
-fn start_export(app: &AppHandle, path: &str, start: f64, end: f64) -> Result<u64, String> {
+fn start_export(app: &AppHandle, path: &str, start: f64, end: f64, name: Option<&str>) -> Result<u64, String> {
     let cfg = Config::load_or_create(&paths::config_file()).map_err(|e| format!("{e:#}"))?;
     let source = library::own_recording(Path::new(path), &cfg.output_dir)?;
     let info = ptv_core::media::probe(&source).map_err(|e| format!("couldn't read {}: {e:#}", source.display()))?;
@@ -71,7 +78,10 @@ fn start_export(app: &AppHandle, path: &str, start: f64, end: f64) -> Result<u64
         _ => cfg.video.codec,
     };
     let (game, _) = library::game_and_kind(&source);
-    let output = clip::output_path(&cfg.output_dir, &game, ExportKind::Clip, chrono::Local::now());
+    let mut output = clip::output_path(&cfg.output_dir, &game, ExportKind::Clip, chrono::Local::now());
+    if let Some(name) = name {
+        output = clip::named_path(&output, name)?;
+    }
     let exports = app.state::<Exports>();
     let id = exports.next_id.fetch_add(1, Ordering::Relaxed);
     let part = output.with_extension(format!("mp4.{id}.part"));

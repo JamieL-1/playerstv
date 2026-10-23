@@ -91,6 +91,7 @@ export interface Config {
   auto_update: boolean;
   close_action: CloseAction;
   storage_limit_gb: number | null;
+  keep_named_recordings: boolean;
   video: VideoConfig;
   audio: AudioConfig;
   games: GameProfile[];
@@ -164,6 +165,8 @@ export interface MediaInfo {
 export interface Recording {
   path: string;
   name: string;
+  /** The name the user gave it, if any (see lib/library.ts::displayName). */
+  custom_name: string | null;
   /** Game folder name (safeName of the game's name). */
   game: string;
   kind: "clip" | "session";
