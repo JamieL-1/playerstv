@@ -36,8 +36,11 @@ pub fn unique_path(path: PathBuf) -> PathBuf {
 /// Like [`unique_path`], but `except` (a file being renamed) doesn't count
 /// as taken.
 pub fn unique_path_except(path: PathBuf, except: Option<&Path>) -> PathBuf {
-    // Windows file names are case-insensitive.
-    let free = |p: &Path| !p.exists() || except.is_some_and(|e| e.as_os_str().eq_ignore_ascii_case(p.as_os_str()));
+    // Asks the file system whether `p` is `except` itself, so a change of
+    // case (by Windows' rules, `É` ↔ `é` included) isn't seen as taken.
+    let is_except =
+        |p: &Path| except.is_some_and(|e| matches!((p.canonicalize(), e.canonicalize()), (Ok(a), Ok(b)) if a == b));
+    let free = |p: &Path| !p.exists() || is_except(p);
     if free(&path) {
         return path;
     }
@@ -46,7 +49,8 @@ pub fn unique_path_except(path: PathBuf, except: Option<&Path>) -> PathBuf {
     (2..).map(|n| path.with_file_name(format!("{stem} ({n}).{ext}"))).find(|p| free(p)).expect("unbounded range")
 }
 
-/// Longest name a user can give a recording (the timestamp comes on top).
+/// Longest name a user can give a recording. The timestamp comes on top,
+/// and doesn't count when the name already ends in one.
 pub const MAX_NAME_CHARS: usize = 100;
 
 /// A name the user typed for a recording, trimmed and without a typed
@@ -59,7 +63,10 @@ pub fn check_name(name: &str) -> Result<&str, String> {
     if name.is_empty() {
         return Err("Enter a name".into());
     }
-    if name.chars().count() > MAX_NAME_CHARS {
+    // Only the label of a name ending in a timestamp (like the default) counts.
+    let file = format!("{name}.mp4");
+    let label = crate::storage::split_name(&file).map_or(name, |(label, _)| label);
+    if label.chars().count() > MAX_NAME_CHARS {
         return Err(format!("Names can be at most {MAX_NAME_CHARS} characters"));
     }
     if let Some(c) = name.chars().find(|c| r#"<>:"/\|?*"#.contains(*c) || c.is_control()) {
@@ -216,6 +223,10 @@ mod tests {
         assert!(check_name("tab\there").is_err());
         assert!(check_name(&"x".repeat(MAX_NAME_CHARS)).is_ok());
         assert!(check_name(&"x".repeat(MAX_NAME_CHARS + 1)).is_err());
+        // A long game's default name: the timestamp doesn't count.
+        let long_default = format!("{}_2026-10-21_14-03-22", "G".repeat(MAX_NAME_CHARS));
+        assert!(check_name(&long_default).is_ok());
+        assert!(check_name(&format!("G{long_default}")).is_err());
         assert_eq!(check_name("épée"), Ok("épée"));
     }
 
@@ -246,15 +257,21 @@ mod tests {
         let a2 = dir.join("A_2026-10-21_14-03-22 (2).mp4");
         std::fs::write(&a, b"x").unwrap();
         std::fs::write(&a2, b"x").unwrap();
+        let epee = dir.join("Épée_2026-10-21_14-03-22.mp4");
+        std::fs::write(&epee, b"x").unwrap();
         let picked = (
             unique_path(a.clone()),
             unique_path_except(a.clone(), Some(&a2)),
             unique_path_except(dir.join("a_2026-10-21_14-03-22.mp4"), Some(&a)),
+            unique_path_except(dir.join("épée_2026-10-21_14-03-22.mp4"), Some(&epee)),
+            unique_path_except(dir.join("épée_2026-10-21_14-03-22.mp4"), Some(&a)),
         );
         std::fs::remove_dir_all(&dir).unwrap();
         assert_eq!(picked.0, dir.join("A_2026-10-21_14-03-22 (3).mp4"));
         assert_eq!(picked.1, a2, "the file being renamed can keep its (2)");
         assert_eq!(picked.2, dir.join("a_2026-10-21_14-03-22.mp4"), "a change of case only");
+        assert_eq!(picked.3, dir.join("épée_2026-10-21_14-03-22.mp4"), "a change of case beyond ASCII");
+        assert_eq!(picked.4, dir.join("épée_2026-10-21_14-03-22 (2).mp4"), "taken by another file");
     }
 
     #[test]

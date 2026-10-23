@@ -39,7 +39,8 @@ function NameForm({ title, description, initial, confirm, onSubmit, onClose }: P
   const [name, setName] = useState(initial);
   const [saving, setSaving] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
-  const error = nameError(name);
+  // What was suggested can always be kept.
+  const error = name === initial ? null : nameError(name);
   const shown = failure ?? (name !== initial ? error : null);
 
   const submit = async (e: React.FormEvent) => {

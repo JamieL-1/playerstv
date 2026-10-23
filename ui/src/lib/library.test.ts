@@ -138,4 +138,10 @@ describe("names", () => {
     expect(nameError("x".repeat(100))).toBeNull();
     expect(nameError("x".repeat(101))).toMatch(/at most 100/);
   });
+
+  it("doesn't count a timestamp toward the limit", () => {
+    const longGame = "G".repeat(100);
+    expect(nameError(defaultClipName(longGame))).toBeNull();
+    expect(nameError(defaultClipName(`${longGame}G`))).toMatch(/at most 100/);
+  });
 });
