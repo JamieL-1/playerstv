@@ -13,6 +13,7 @@ const base: Config = {
   auto_update: true,
   close_action: "ask",
   storage_limit_gb: null,
+  keep_named_recordings: false,
   video: { resolution: "native", fps: 60, codec: "h264", quality: "high", bitrate_cap_mbps: null },
   audio: {
     game_audio: true,

@@ -99,9 +99,19 @@ export function StorageSection() {
               </div>
             </div>
           </SettingRow>
+          <SettingRow
+            label="Keep named recordings"
+            description="Clips and sessions you've given a name are never deleted to make space. They still count toward the limit."
+          >
+            <Switch
+              checked={draft.keep_named_recordings}
+              onCheckedChange={(on) => update((c) => ({ ...c, keep_named_recordings: on }))}
+            />
+          </SettingRow>
           <Hint tone="warn">
-            The oldest recordings are deleted permanently. Only files playerstv saved count; move a recording out of the
-            folder to keep it forever.
+            The oldest recordings are deleted permanently. Only files playerstv saved count;{" "}
+            {draft.keep_named_recordings ? "name a recording or move it" : "move a recording"} out of the folder to keep
+            it forever.
           </Hint>
           {used > limit * 1e9 && (
             <Hint tone="warn">You're over this limit: saving will delete the oldest recordings now.</Hint>

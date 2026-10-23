@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect } from "react";
+import { useCallback, useEffect } from "react";
 import { backend, events } from "@/api/backend";
 import type { Recording } from "@/api/types";
 
@@ -24,4 +24,25 @@ export function useLibrary() {
     };
   }, [client]);
   return useQuery({ queryKey: LIBRARY_KEY, queryFn: backend.listRecordings, staleTime: Infinity });
+}
+
+/**
+ * Renames a recording, updating the library straight away (so a page
+ * showing it can follow the new path); resolves to that path.
+ */
+export function useRename() {
+  const client = useQueryClient();
+  return useCallback(
+    async (rec: Recording, name: string) => {
+      const path = await backend.renameRecording(rec.path, name);
+      const file = path.split(/[\\/]/).pop() ?? rec.name;
+      client.setQueryData<Recording[]>(LIBRARY_KEY, (recs) =>
+        recs?.map((r) => (r.path === rec.path ? { ...r, path, name: file, custom_name: name } : r)),
+      );
+      // The backend has the last word on custom_name (a default name isn't one).
+      void client.invalidateQueries({ queryKey: LIBRARY_KEY });
+      return path;
+    },
+    [client],
+  );
 }

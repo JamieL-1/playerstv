@@ -85,6 +85,7 @@ fn run_window() {
             icons::game_icons,
             icons::add_game,
             library::list_recordings,
+            library::rename_recording,
             library::delete_recording,
             library::show_in_explorer,
             library::open_external,

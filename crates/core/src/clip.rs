@@ -30,12 +30,70 @@ pub fn output_path(output_dir: &Path, game: &str, kind: ExportKind, at: DateTime
 
 /// Returns `path` or, if it already exists, `path` with ` (2)`, ` (3)`… added.
 pub fn unique_path(path: PathBuf) -> PathBuf {
-    if !path.exists() {
+    unique_path_except(path, None)
+}
+
+/// Like [`unique_path`], but `except` (a file being renamed) doesn't count
+/// as taken.
+pub fn unique_path_except(path: PathBuf, except: Option<&Path>) -> PathBuf {
+    // Asks the file system whether `p` is `except` itself, so a change of
+    // case (by Windows' rules, `É` ↔ `é` included) isn't seen as taken.
+    let is_except =
+        |p: &Path| except.is_some_and(|e| matches!((p.canonicalize(), e.canonicalize()), (Ok(a), Ok(b)) if a == b));
+    let free = |p: &Path| !p.exists() || is_except(p);
+    if free(&path) {
         return path;
     }
     let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("clip").to_owned();
     let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("mp4").to_owned();
-    (2..).map(|n| path.with_file_name(format!("{stem} ({n}).{ext}"))).find(|p| !p.exists()).expect("unbounded range")
+    (2..).map(|n| path.with_file_name(format!("{stem} ({n}).{ext}"))).find(|p| free(p)).expect("unbounded range")
+}
+
+/// Longest name a user can give a recording. The timestamp comes on top,
+/// and doesn't count when the name already ends in one.
+pub const MAX_NAME_CHARS: usize = 100;
+
+/// A name the user typed for a recording, trimmed and without a typed
+/// `.mp4`, or why it can't be a file name. Mirrored in ui/src/lib/library.ts.
+pub fn check_name(name: &str) -> Result<&str, String> {
+    let mut name = name.trim();
+    if name.len() >= 4 && name.get(name.len() - 4..).is_some_and(|ext| ext.eq_ignore_ascii_case(".mp4")) {
+        name = name[..name.len() - 4].trim_end();
+    }
+    if name.is_empty() {
+        return Err("Enter a name".into());
+    }
+    // Only the label of a name ending in a timestamp (like the default) counts.
+    let file = format!("{name}.mp4");
+    let label = crate::storage::split_name(&file).map_or(name, |(label, _)| label);
+    if label.chars().count() > MAX_NAME_CHARS {
+        return Err(format!("Names can be at most {MAX_NAME_CHARS} characters"));
+    }
+    if let Some(c) = name.chars().find(|c| r#"<>:"/\|?*"#.contains(*c) || c.is_control()) {
+        return Err(if c.is_control() {
+            "Names can't contain control characters".into()
+        } else {
+            format!("Names can't contain {c}")
+        });
+    }
+    Ok(name)
+}
+
+/// Where the recording at (or to be saved at) `path` goes when named
+/// `name`: `<dir>/<name>_<its timestamp>.mp4`. A name that already ends in a
+/// timestamp, like the default one, is used as it is.
+pub fn named_path(path: &Path, name: &str) -> Result<PathBuf, String> {
+    let name = check_name(name)?;
+    let file = format!("{name}.mp4");
+    if crate::storage::is_recording_file(&file) {
+        return Ok(path.with_file_name(file));
+    }
+    let (_, stamp) = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .and_then(crate::storage::split_name)
+        .ok_or_else(|| format!("{} isn't a playerstv recording", path.display()))?;
+    Ok(path.with_file_name(format!("{name}_{stamp}.mp4")))
 }
 
 /// Contents of an ffmpeg concat-demuxer list file.
@@ -153,6 +211,67 @@ mod tests {
             output_path(out, "Rune Lite", ExportKind::Session, t),
             out.join("Rune_Lite").join("Sessions").join("Rune_Lite_session_2026-10-21_14-03-22.mp4")
         );
+    }
+
+    #[test]
+    fn names_are_checked() {
+        assert_eq!(check_name("  Big fight  "), Ok("Big fight"));
+        assert_eq!(check_name("Big fight.MP4"), Ok("Big fight"));
+        assert!(check_name("   ").is_err());
+        assert!(check_name(".mp4").is_err());
+        assert_eq!(check_name("a/b"), Err("Names can't contain /".into()));
+        assert!(check_name("tab\there").is_err());
+        assert!(check_name(&"x".repeat(MAX_NAME_CHARS)).is_ok());
+        assert!(check_name(&"x".repeat(MAX_NAME_CHARS + 1)).is_err());
+        // A long game's default name: the timestamp doesn't count.
+        let long_default = format!("{}_2026-10-21_14-03-22", "G".repeat(MAX_NAME_CHARS));
+        assert!(check_name(&long_default).is_ok());
+        assert!(check_name(&format!("G{long_default}")).is_err());
+        assert_eq!(check_name("épée"), Ok("épée"));
+    }
+
+    #[test]
+    fn named_paths_keep_the_timestamp() {
+        let dir = Path::new(r"C:\out\RuneLite");
+        let clip = dir.join("RuneLite_2026-10-21_14-03-22.mp4");
+        assert_eq!(named_path(&clip, "Big fight").unwrap(), dir.join("Big fight_2026-10-21_14-03-22.mp4"));
+        // Renaming a named one, or one with a (2), keeps the original timestamp.
+        let named = dir.join("Big fight_2026-10-21_14-03-22 (2).mp4");
+        assert_eq!(named_path(&named, "Bigger fight").unwrap(), dir.join("Bigger fight_2026-10-21_14-03-22.mp4"));
+        // The default name, left alone, stays exactly as it is.
+        assert_eq!(named_path(&clip, "RuneLite_2026-10-21_14-03-22").unwrap(), clip);
+        let session = dir.join("Sessions").join("RuneLite_session_2026-10-21_14-03-22.mp4");
+        assert_eq!(
+            named_path(&session, "Raid night").unwrap(),
+            dir.join("Sessions").join("Raid night_2026-10-21_14-03-22.mp4")
+        );
+        assert!(named_path(&clip, "a:b").is_err());
+        assert!(named_path(&dir.join("holiday.mp4"), "x").is_err());
+    }
+
+    #[test]
+    fn renaming_to_its_own_name_is_free() {
+        let dir = std::env::temp_dir().join(format!("ptv-clip-unique-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let a = dir.join("A_2026-10-21_14-03-22.mp4");
+        let a2 = dir.join("A_2026-10-21_14-03-22 (2).mp4");
+        std::fs::write(&a, b"x").unwrap();
+        std::fs::write(&a2, b"x").unwrap();
+        let epee = dir.join("Épée_2026-10-21_14-03-22.mp4");
+        std::fs::write(&epee, b"x").unwrap();
+        let picked = (
+            unique_path(a.clone()),
+            unique_path_except(a.clone(), Some(&a2)),
+            unique_path_except(dir.join("a_2026-10-21_14-03-22.mp4"), Some(&a)),
+            unique_path_except(dir.join("épée_2026-10-21_14-03-22.mp4"), Some(&epee)),
+            unique_path_except(dir.join("épée_2026-10-21_14-03-22.mp4"), Some(&a)),
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(picked.0, dir.join("A_2026-10-21_14-03-22 (3).mp4"));
+        assert_eq!(picked.1, a2, "the file being renamed can keep its (2)");
+        assert_eq!(picked.2, dir.join("a_2026-10-21_14-03-22.mp4"), "a change of case only");
+        assert_eq!(picked.3, dir.join("épée_2026-10-21_14-03-22.mp4"), "a change of case beyond ASCII");
+        assert_eq!(picked.4, dir.join("épée_2026-10-21_14-03-22 (2).mp4"), "taken by another file");
     }
 
     #[test]

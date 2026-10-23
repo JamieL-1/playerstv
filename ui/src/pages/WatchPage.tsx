@@ -8,6 +8,7 @@ import {
   Maximize,
   Minimize,
   Pause,
+  Pencil,
   Play,
   Scissors,
   SkipBack,
@@ -22,6 +23,7 @@ import { toast } from "sonner";
 import { backend } from "@/api/backend";
 import type { ExportDone, Recording } from "@/api/types";
 import { SeekBar } from "@/components/player/SeekBar";
+import { NameDialog } from "@/components/library/NameDialog";
 import { TrimTimeline } from "@/components/player/TrimTimeline";
 import { Button } from "@/components/ui/button";
 import {
@@ -37,9 +39,9 @@ import { Toggle } from "@/components/ui/toggle";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useConfig } from "@/hooks/useConfig";
 import { useExport } from "@/hooks/useExport";
-import { LIBRARY_KEY, useLibrary } from "@/hooks/useLibrary";
+import { LIBRARY_KEY, useLibrary, useRename } from "@/hooks/useLibrary";
 import { formatElapsed, formatSize, nominalFps } from "@/lib/format";
-import { canPlay, formatWhen, gameName } from "@/lib/library";
+import { canPlay, defaultClipName, displayName, formatWhen, gameName } from "@/lib/library";
 import { clamp, formatPrecise, setIn, setOut, snapToFrame, type Range } from "@/lib/timeline";
 import { cn } from "@/lib/utils";
 
@@ -118,6 +120,10 @@ function Watch(props: { rec: Recording; trimming: boolean; setTrimming: (on: boo
     }
   };
   const { exporting, start: startExport, cancel: cancelExport } = useExport(exportDone);
+  // The default name of the clip being named before export, or null.
+  const [newClipName, setNewClipName] = useState<string | null>(null);
+  const [renaming, setRenaming] = useState(false);
+  const rename = useRename();
 
   // Smooth playhead while playing (timeupdate only fires ~4×/s); in trim
   // mode, playback loops inside the selection.
@@ -199,7 +205,8 @@ function Watch(props: { rec: Recording; trimming: boolean; setTrimming: (on: boo
 
   // Keyboard: YouTube-style, plus editor keys for trimming.
   const onKey = useEffectEvent((e: KeyboardEvent) => {
-    const typing = e.target instanceof Element && e.target.closest("input, textarea, [role=menu], [role=listbox]");
+    const typing =
+      e.target instanceof Element && e.target.closest("input, textarea, [role=menu], [role=listbox], [role=dialog]");
     if (e.ctrlKey || e.altKey || e.metaKey || typing) return;
     const v = video.current;
     const actions: Record<string, () => void> = {
@@ -251,7 +258,11 @@ function Watch(props: { rec: Recording; trimming: boolean; setTrimming: (on: boo
 
   return (
     <div className="flex h-screen flex-col bg-background">
-      <Header title={formatWhen(rec.modified)} subtitle={`${game} · ${formatSize(rec.size)}`} onBack={onBack}>
+      <Header
+        title={rec.custom_name ?? formatWhen(rec.modified)}
+        subtitle={[rec.custom_name && formatWhen(rec.modified), game, formatSize(rec.size)].filter(Boolean).join(" · ")}
+        onBack={onBack}
+      >
         {tracks.length > 0 && playable && (
           <Tooltip>
             <TooltipTrigger asChild>
@@ -277,6 +288,9 @@ function Watch(props: { rec: Recording; trimming: boolean; setTrimming: (on: boo
             <Scissors /> Trim
           </Toggle>
         )}
+        <HeaderButton label="Rename" onClick={() => setRenaming(true)}>
+          <Pencil />
+        </HeaderButton>
         <HeaderButton label="Show in Explorer" onClick={() => backend.showInExplorer(rec.path).catch(fail)}>
           <FolderOpen />
         </HeaderButton>
@@ -443,7 +457,7 @@ function Watch(props: { rec: Recording; trimming: boolean; setTrimming: (on: boo
                   size="sm"
                   onClick={() => {
                     video.current?.pause();
-                    startExport(rec.path, range.start, range.end);
+                    setNewClipName(defaultClipName(rec.game));
                   }}
                 >
                   <Scissors /> Save clip
@@ -453,6 +467,32 @@ function Watch(props: { rec: Recording; trimming: boolean; setTrimming: (on: boo
           </div>
         )}
       </div>
+
+      <NameDialog
+        open={newClipName !== null}
+        title="Save clip"
+        description={`Name the new ${formatPrecise(length)} clip. It's saved with your other ${game} clips.`}
+        initial={newClipName ?? ""}
+        confirm="Save clip"
+        onClose={() => setNewClipName(null)}
+        onSubmit={(name) => {
+          // Left as suggested: saved exactly as an unnamed clip would be.
+          startExport(rec.path, range.start, range.end, name === newClipName ? null : name);
+        }}
+      />
+      <NameDialog
+        open={renaming}
+        title={`Rename ${rec.kind === "session" ? "session" : "clip"}`}
+        description="The file is renamed too, keeping its date and time at the end."
+        initial={displayName(rec)}
+        confirm="Rename"
+        onClose={() => setRenaming(false)}
+        onSubmit={async (name) => {
+          if (name === displayName(rec)) return;
+          const path = await rename(rec, name);
+          navigate(`/watch?path=${encodeURIComponent(path)}${trimming ? "&trim=1" : ""}`, { replace: true });
+        }}
+      />
     </div>
   );
 }

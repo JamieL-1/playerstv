@@ -42,10 +42,10 @@ export function useExport(onDone: (done: ExportDone) => void) {
   }, [finish]);
 
   const start = useCallback(
-    async (path: string, startS: number, endS: number) => {
+    async (path: string, startS: number, endS: number, name: string | null) => {
       setState({ id: null, fraction: 0 });
       try {
-        const id = await backend.exportTrim(path, startS, endS);
+        const id = await backend.exportTrim(path, startS, endS, name);
         const finished = early.current.get(id);
         early.current.clear();
         if (finished) return finish(finished);

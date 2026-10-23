@@ -72,6 +72,12 @@ impl Thumbs {
         }
         prune(&self.dir, &keep);
     }
+
+    /// Keeps a recording's thumbnail when it's renamed from `old` to `new`.
+    pub fn moved(&self, old: &str, new: &str, size: u64, modified: u64) {
+        let from = self.dir.join(format!("{}.jpg", key(old, size, modified)));
+        let _ = std::fs::rename(from, self.dir.join(format!("{}.jpg", key(new, size, modified))));
+    }
 }
 
 /// Stable across runs (unlike `DefaultHasher`): FNV-1a of path, size, mtime.

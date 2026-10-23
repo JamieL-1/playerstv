@@ -99,3 +99,35 @@ export function formatWhen(unixSeconds: number, now: Date = new Date()): string 
   if (d.getTime() >= startOfToday - day) return `Yesterday at ${time}`;
   return `${d.toLocaleDateString()} ${time}`;
 }
+
+/** What a recording is called: the name the user gave it, else its file name without ".mp4". */
+export function displayName(rec: Recording): string {
+  return rec.custom_name ?? rec.name.replace(/\.mp4$/i, "");
+}
+
+/** The name a clip saved now would get by default (crates/core/src/clip.rs::output_path). */
+export function defaultClipName(gameFolder: string, now: Date = new Date()): string {
+  const p = (n: number) => String(n).padStart(2, "0");
+  const date = `${now.getFullYear()}-${p(now.getMonth() + 1)}-${p(now.getDate())}`;
+  return `${gameFolder}_${date}_${p(now.getHours())}-${p(now.getMinutes())}-${p(now.getSeconds())}`;
+}
+
+/** Not counting a timestamp the name ends in. */
+export const MAX_NAME_CHARS = 100;
+
+/** Why `name` can't name a recording, or null if it can (crates/core/src/clip.rs::check_name). */
+export function nameError(name: string): string | null {
+  const trimmed = name
+    .trim()
+    .replace(/\.mp4$/i, "")
+    .trimEnd();
+  if (!trimmed) return "Enter a name";
+  const chars = [...trimmed];
+  // Only the label of a name ending in a timestamp (like the default) counts.
+  const label = /^(.+)_\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}( \(\d+\))?$/.exec(trimmed)?.[1] ?? trimmed;
+  if ([...label].length > MAX_NAME_CHARS) return `Names can be at most ${MAX_NAME_CHARS} characters`;
+  const control = (c: string) => c.charCodeAt(0) < 0x20 || (c.charCodeAt(0) >= 0x7f && c.charCodeAt(0) <= 0x9f);
+  if (chars.some(control)) return "Names can't contain control characters";
+  const bad = chars.find((c) => '<>:"/\\|?*'.includes(c));
+  return bad ? `Names can't contain ${bad}` : null;
+}

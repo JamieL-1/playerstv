@@ -9,6 +9,7 @@ use std::time::{Duration, SystemTime};
 
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use ptv_common::paths;
+use ptv_core::clip;
 use ptv_core::config::Config;
 use ptv_core::media::MediaInfo;
 use ptv_core::storage;
@@ -31,6 +32,8 @@ pub enum Kind {
 pub struct Recording {
     pub path: String,
     pub name: String,
+    /// The name the user gave it (see `storage::custom_name`), if any.
+    pub custom_name: Option<String>,
     /// The game's folder name (`profile::safe_name` of the game's name).
     pub game: String,
     pub kind: Kind,
@@ -193,6 +196,7 @@ fn build(
         out.push(Recording {
             path: r.path.display().to_string(),
             name: r.path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
+            custom_name: storage::custom_name(&r.path).map(String::from),
             game,
             kind,
             size: r.size,
@@ -266,6 +270,46 @@ fn strip_verbatim(p: PathBuf) -> PathBuf {
 fn checked(path: &str) -> Result<PathBuf, String> {
     let cfg = Config::load_or_create(&paths::config_file()).map_err(|e| format!("{e:#}"))?;
     own_recording(Path::new(path), &cfg.output_dir)
+}
+
+/// Names a recording `name` (see `clip::named_path`); returns its new path.
+#[tauri::command]
+pub async fn rename_recording(app: AppHandle, path: String, name: String) -> Result<String, String> {
+    let file = checked(&path)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let target = rename(&file, &name)?;
+        // The path as listed (`file` is canonicalised), for the cache.
+        let listed = Path::new(&path);
+        let renamed = listed.with_file_name(target.file_name().unwrap_or_default());
+        app.state::<Library>().moved(listed, &renamed);
+        Ok(renamed.display().to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+fn rename(file: &Path, name: &str) -> Result<PathBuf, String> {
+    let target = clip::unique_path_except(clip::named_path(file, name)?, Some(file));
+    if target != file {
+        std::fs::rename(file, &target)
+            .map_err(|e| format!("couldn't rename {}: {e}; is it open in another app?", file.display()))?;
+    }
+    Ok(target)
+}
+
+impl Library {
+    /// Carries a renamed recording's probe and thumbnail over to its new
+    /// path, so neither has to be made again.
+    fn moved(&self, old: &Path, new: &Path) {
+        if old == new {
+            return;
+        }
+        let mut inner = self.inner.lock().unwrap();
+        let Some(entry) = inner.cache.remove(old) else { return };
+        self.thumbs.moved(&old.display().to_string(), &new.display().to_string(), entry.size, entry.modified_ms / 1000);
+        inner.cache.insert(new.to_owned(), entry);
+        save_cache(&paths::library_cache(), &inner.cache);
+    }
 }
 
 /// Moves a recording to the Recycle Bin.

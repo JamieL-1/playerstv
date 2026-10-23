@@ -31,11 +31,15 @@ export const backend = {
   storageUsage: (dir: string) => invoke<{ bytes: number; files: number }>("storage_usage", { dir }),
 
   listRecordings: () => invoke<Recording[]>("list_recordings"),
+  /** Its new path. */
+  renameRecording: (path: string, name: string) => invoke<string>("rename_recording", { path, name }),
   deleteRecording: (path: string) => invoke<void>("delete_recording", { path }),
   showInExplorer: (path: string) => invoke<void>("show_in_explorer", { path }),
   openExternal: (path: string) => invoke<void>("open_external", { path }),
   openOutputFolder: () => invoke<void>("open_output_folder"),
-  exportTrim: (path: string, start: number, end: number) => invoke<number>("export_trim", { path, start, end }),
+  /** `name` null saves it under the default name. */
+  exportTrim: (path: string, start: number, end: number, name: string | null) =>
+    invoke<number>("export_trim", { path, start, end, name }),
   cancelTrim: (id: number) => invoke<void>("cancel_trim", { id }),
 };
 
