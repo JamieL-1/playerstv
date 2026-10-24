@@ -30,6 +30,9 @@ pub struct Recorder {
     pub audio_titles: Vec<String>,
     /// What's being encoded, e.g. "1900×1030 · 120 fps · H.264 · High quality".
     pub video_summary: String,
+    /// The window and its size when capture started. gfxcapture keeps that
+    /// frame size, letterboxing the window if it's resized later.
+    pub target: CaptureTarget,
 }
 
 impl Recorder {
@@ -115,6 +118,7 @@ impl Recorder {
             started: Instant::now(),
             audio_titles,
             video_summary,
+            target,
         })
     }
 

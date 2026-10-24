@@ -12,6 +12,7 @@ use crossbeam_channel::{Receiver, RecvTimeoutError};
 use ptv_capture::detect::{self, GameWindow};
 use ptv_core::clip::{self, ExportKind};
 use ptv_core::config::Config;
+use ptv_core::ffmpeg_args::{self, CaptureTarget};
 use ptv_core::profile::{safe_name, ProfileMatcher};
 use ptv_core::ring::{self, Segment};
 use ptv_core::storage;
@@ -21,6 +22,9 @@ use crate::paths;
 use crate::recorder::Recorder;
 
 const SCAN_INTERVAL: Duration = Duration::from_secs(2);
+/// How long a new window size must hold before the encoder restarts for it,
+/// so dragging a window edge doesn't restart it over and over.
+const RESIZE_SETTLE: Duration = Duration::from_secs(2);
 const META_FILE: &str = "meta.txt";
 const SESSION_FILE: &str = "session.txt";
 
@@ -71,6 +75,9 @@ struct Active {
     failures: u32,
     retry_at: Instant,
     last_error: Option<String>,
+    /// A window size that differs from the one being encoded, and when it
+    /// was first seen.
+    pending_resize: Option<((u32, u32), Instant)>,
 }
 
 pub struct Supervisor {
@@ -157,6 +164,10 @@ impl Supervisor {
                 }
                 if active.recorder.is_none() && Instant::now() >= active.retry_at {
                     self.restart_recorder(&mut active);
+                } else if window_resized(&mut active) {
+                    tracing::info!("{} window resized, restarting encoder", active.window.profile.name);
+                    active.failures = 0;
+                    self.restart_recorder(&mut active);
                 }
                 if self.exports_in_flight.load(Ordering::SeqCst) == 0 {
                     prune(&active.dir, active.settings.buffer_seconds, active.session_from);
@@ -216,6 +227,7 @@ impl Supervisor {
             failures: 0,
             retry_at: Instant::now(),
             last_error: None,
+            pending_resize: None,
         };
         start_recorder(&self.ffmpeg, &mut active);
         if active.settings.record_full_session {
@@ -490,7 +502,37 @@ fn matchers(cfg: &Config) -> Vec<ProfileMatcher> {
         .collect()
 }
 
+/// True once the window has settled at a size that would encode to a
+/// different frame size than the running encoder's. gfxcapture fixes its
+/// output size at start, so without a restart a game that changes size after
+/// launch (RuneLite opening its sidebar, say) ends up letterboxed.
+fn window_resized(active: &mut Active) -> bool {
+    let Some(rec) = &active.recorder else {
+        active.pending_resize = None;
+        return false;
+    };
+    let size = detect::client_size(active.window.hwnd);
+    let now = CaptureTarget { width: size.0, height: size.1, ..rec.target };
+    let video = &active.settings.video;
+    // Minimised (0×0) isn't a new size: the window comes back as it was.
+    if size.0 == 0
+        || size.1 == 0
+        || ffmpeg_args::encoded_size(now, video) == ffmpeg_args::encoded_size(rec.target, video)
+    {
+        active.pending_resize = None;
+        return false;
+    }
+    match active.pending_resize {
+        Some((pending, since)) if pending == size => since.elapsed() >= RESIZE_SETTLE,
+        _ => {
+            active.pending_resize = Some((size, Instant::now()));
+            false
+        }
+    }
+}
+
 fn start_recorder(ffmpeg: &Path, active: &mut Active) {
+    active.pending_resize = None;
     let start = ring::next_index(&ring::scan(&active.dir).unwrap_or_default());
     active.epoch_from = start;
     match Recorder::start(ffmpeg, &active.window, &active.settings, &active.dir, start) {

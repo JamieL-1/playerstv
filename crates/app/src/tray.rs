@@ -588,8 +588,19 @@ fn status_icon(status: &Status) -> Icon {
 
 /// A Windows notification (also used by the window).
 pub fn toast(title: &str, text: &str) {
+    // Toasts are WinRT calls from threads that never initialise COM, so they
+    // run in the process's implicit MTA. That MTA only exists while some
+    // thread is in it (the audio feeders); when an encoder restart stops them
+    // all, it's torn down and the toast's cached COM factories dangle: the
+    // next toast crashed. Holding a usage reference keeps it alive for good.
+    static MTA: std::sync::Once = std::sync::Once::new();
+    MTA.call_once(|| {
+        if let Err(e) = unsafe { windows::Win32::System::Com::CoIncrementMTAUsage() } {
+            tracing::warn!("CoIncrementMTAUsage failed: {e}");
+        }
+    });
     if let Err(e) = Toast::new(Toast::POWERSHELL_APP_ID).title(title).text1(text).show() {
-        tracing::debug!("toast failed: {e}");
+        tracing::warn!("toast failed: {e}");
     }
 }
 
