@@ -11,7 +11,8 @@ use chrono::Local;
 use crossbeam_channel::{Receiver, RecvTimeoutError};
 use ptv_capture::detect::{self, GameWindow};
 use ptv_core::clip::{self, ExportKind};
-use ptv_core::config::Config;
+use ptv_core::config::{Config, VideoConfig};
+use ptv_core::ffmpeg_args::{self, CaptureTarget};
 use ptv_core::profile::{safe_name, ProfileMatcher};
 use ptv_core::ring::{self, Segment};
 use ptv_core::storage;
@@ -21,6 +22,9 @@ use crate::paths;
 use crate::recorder::Recorder;
 
 const SCAN_INTERVAL: Duration = Duration::from_secs(2);
+/// How long a new window size must hold before the encoder restarts for it,
+/// so dragging a window edge doesn't restart it over and over.
+const RESIZE_SETTLE: Duration = Duration::from_secs(2);
 const META_FILE: &str = "meta.txt";
 const SESSION_FILE: &str = "session.txt";
 
@@ -71,6 +75,9 @@ struct Active {
     failures: u32,
     retry_at: Instant,
     last_error: Option<String>,
+    /// A window size that differs from the one being encoded, and when it
+    /// was first seen.
+    pending_resize: Option<((u32, u32), Instant)>,
 }
 
 pub struct Supervisor {
@@ -157,6 +164,10 @@ impl Supervisor {
                 }
                 if active.recorder.is_none() && Instant::now() >= active.retry_at {
                     self.restart_recorder(&mut active);
+                } else if window_resized(&mut active) {
+                    tracing::info!("{} window resized, restarting encoder", active.window.profile.name);
+                    active.failures = 0;
+                    self.restart_recorder(&mut active);
                 }
                 if self.exports_in_flight.load(Ordering::SeqCst) == 0 {
                     prune(&active.dir, active.settings.buffer_seconds, active.session_from);
@@ -216,6 +227,7 @@ impl Supervisor {
             failures: 0,
             retry_at: Instant::now(),
             last_error: None,
+            pending_resize: None,
         };
         start_recorder(&self.ffmpeg, &mut active);
         if active.settings.record_full_session {
@@ -490,7 +502,49 @@ fn matchers(cfg: &Config) -> Vec<ProfileMatcher> {
         .collect()
 }
 
+/// True once the window has settled at a size that would encode to a
+/// different frame size than the running encoder's. gfxcapture fixes its
+/// output size at start, so without a restart a game that changes size after
+/// launch (RuneLite opening its sidebar, say) ends up letterboxed.
+fn window_resized(active: &mut Active) -> bool {
+    let Some(rec) = &active.recorder else {
+        active.pending_resize = None;
+        return false;
+    };
+    let size = detect::client_size(active.window.hwnd);
+    resize_settled(&mut active.pending_resize, rec.target, size, &active.settings.video, Instant::now())
+}
+
+/// [`window_resized`]'s decision for a window now `size` big, while
+/// `encoding` is what the encoder was started with. `pending` carries a
+/// changed size between calls.
+fn resize_settled(
+    pending: &mut Option<((u32, u32), Instant)>,
+    encoding: CaptureTarget,
+    size: (u32, u32),
+    video: &VideoConfig,
+    now: Instant,
+) -> bool {
+    let target = CaptureTarget { width: size.0, height: size.1, ..encoding };
+    // Minimised (0×0) isn't a new size: the window comes back as it was.
+    if size.0 == 0
+        || size.1 == 0
+        || ffmpeg_args::encoded_size(target, video) == ffmpeg_args::encoded_size(encoding, video)
+    {
+        *pending = None;
+        return false;
+    }
+    match *pending {
+        Some((seen, since)) if seen == size => now.duration_since(since) >= RESIZE_SETTLE,
+        _ => {
+            *pending = Some((size, now));
+            false
+        }
+    }
+}
+
 fn start_recorder(ffmpeg: &Path, active: &mut Active) {
+    active.pending_resize = None;
     let start = ring::next_index(&ring::scan(&active.dir).unwrap_or_default());
     active.epoch_from = start;
     match Recorder::start(ffmpeg, &active.window, &active.settings, &active.dir, start) {
@@ -614,12 +668,55 @@ fn delete_when_idle(dir: PathBuf, in_flight: Arc<AtomicUsize>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ptv_core::config::Resolution;
 
     fn temp_dir(tag: &str) -> PathBuf {
         let d = std::env::temp_dir().join(format!("ptv-sup-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         d
+    }
+
+    const ENCODING: CaptureTarget = CaptureTarget { hwnd: 1, width: 1658, height: 1030 };
+
+    /// Feeds `sizes` one second apart; returns the call that said restart.
+    fn first_restart(video: &VideoConfig, sizes: &[(u32, u32)]) -> Option<usize> {
+        let start = Instant::now();
+        let mut pending = None;
+        sizes.iter().enumerate().position(|(i, &size)| {
+            resize_settled(&mut pending, ENCODING, size, video, start + Duration::from_secs(i as u64))
+        })
+    }
+
+    #[test]
+    fn resize_restarts_once_the_new_size_holds() {
+        let v = VideoConfig::default();
+        // Seen at 0 s, still there at 1 s, settled at 2 s.
+        assert_eq!(first_restart(&v, &[(1900, 1030); 4]), Some(2));
+    }
+
+    #[test]
+    fn resize_waits_while_the_window_is_being_dragged() {
+        let v = VideoConfig::default();
+        let drag = [(1700, 1030), (1750, 1030), (1800, 1030), (1900, 1030), (1900, 1030), (1900, 1030)];
+        assert_eq!(first_restart(&v, &drag), Some(5), "the timer restarts at each new size");
+    }
+
+    #[test]
+    fn resize_ignores_going_back_minimising_and_same_output() {
+        let v = VideoConfig::default();
+        // Back to the encoded size before it settled.
+        assert_eq!(first_restart(&v, &[(1900, 1030), (1658, 1030), (1658, 1030), (1658, 1030)]), None);
+        // Minimised windows report 0×0.
+        assert_eq!(first_restart(&v, &[(0, 0); 4]), None);
+        // Minimising mid-change starts the wait over.
+        assert_eq!(first_restart(&v, &[(1900, 1030), (0, 0), (1900, 1030), (1900, 1030), (1900, 1030)]), Some(4));
+        // Native rounds to even, so an odd extra pixel encodes the same.
+        assert_eq!(first_restart(&v, &[(1659, 1031); 4]), None);
+        // A fixed height with the same aspect ratio encodes the same.
+        let p1080 = VideoConfig { resolution: Resolution::P1080, ..Default::default() };
+        assert_eq!(first_restart(&p1080, &[(3316, 2060); 4]), None);
+        assert_eq!(first_restart(&p1080, &[(1900, 1030); 4]), Some(2));
     }
 
     #[test]
