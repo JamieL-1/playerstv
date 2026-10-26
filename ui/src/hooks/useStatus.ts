@@ -21,12 +21,19 @@ export function useStatus(): Snapshot | null | undefined {
   return snapshot;
 }
 
-/** Current Unix time, re-rendering every second (for REC timers). */
-export function useNow(): number {
+/** Current Unix time, re-rendering every second while `ticking` (for REC timers). */
+export function useNow(ticking: boolean = true): number {
   const [now, setNow] = useState(nowSeconds);
   useEffect(() => {
-    const id = setInterval(() => setNow(nowSeconds()), 1000);
-    return () => clearInterval(id);
-  }, []);
+    if (!ticking) return;
+    const update = () => setNow(nowSeconds());
+    // Straight away too: it may be long out of date if it wasn't ticking.
+    const first = setTimeout(update, 0);
+    const id = setInterval(update, 1000);
+    return () => {
+      clearTimeout(first);
+      clearInterval(id);
+    };
+  }, [ticking]);
   return now;
 }

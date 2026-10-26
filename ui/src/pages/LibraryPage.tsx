@@ -14,7 +14,7 @@ import {
   SearchX,
   Trash2,
 } from "lucide-react";
-import { useDeferredValue, useMemo, useState } from "react";
+import { memo, useDeferredValue, useMemo, useState } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router";
 import { toast } from "sonner";
 import { backend } from "@/api/backend";
@@ -182,33 +182,36 @@ interface Action {
   run: (rec: Recording) => void;
 }
 
+/** The card menus' actions; the same array across renders, so cards can skip re-rendering. */
 function useActions(confirmDelete: (rec: Recording) => void, rename: (rec: Recording) => void): Action[] {
   const navigate = useNavigate();
-  const fail = (e: unknown) => toast.error(String(e));
-  return [
-    { id: "play", label: "Play", icon: Play, run: (r) => play(r, navigate) },
-    {
-      id: "trim",
-      label: "Trim",
-      icon: Scissors,
-      run: (r) => navigate(`/watch?path=${encodeURIComponent(r.path)}&trim=1`),
-    },
-    { id: "rename", label: "Rename", icon: Pencil, run: rename },
-    {
-      id: "explorer",
-      label: "Show in Explorer",
-      icon: FolderOpen,
-      separatorBefore: true,
-      run: (r) => backend.showInExplorer(r.path).catch(fail),
-    },
-    {
-      id: "external",
-      label: "Open in default player",
-      icon: ExternalLink,
-      run: (r) => backend.openExternal(r.path).catch(fail),
-    },
-    { id: "delete", label: "Delete", icon: Trash2, destructive: true, separatorBefore: true, run: confirmDelete },
-  ];
+  return useMemo(() => {
+    const fail = (e: unknown) => toast.error(String(e));
+    return [
+      { id: "play", label: "Play", icon: Play, run: (r) => play(r, navigate) },
+      {
+        id: "trim",
+        label: "Trim",
+        icon: Scissors,
+        run: (r) => navigate(`/watch?path=${encodeURIComponent(r.path)}&trim=1`),
+      },
+      { id: "rename", label: "Rename", icon: Pencil, run: rename },
+      {
+        id: "explorer",
+        label: "Show in Explorer",
+        icon: FolderOpen,
+        separatorBefore: true,
+        run: (r) => backend.showInExplorer(r.path).catch(fail),
+      },
+      {
+        id: "external",
+        label: "Open in default player",
+        icon: ExternalLink,
+        run: (r) => backend.openExternal(r.path).catch(fail),
+      },
+      { id: "delete", label: "Delete", icon: Trash2, destructive: true, separatorBefore: true, run: confirmDelete },
+    ];
+  }, [navigate, confirmDelete, rename]);
 }
 
 function play(rec: Recording, navigate: ReturnType<typeof useNavigate>) {
@@ -217,7 +220,19 @@ function play(rec: Recording, navigate: ReturnType<typeof useNavigate>) {
   navigate(`/watch?path=${encodeURIComponent(rec.path)}`);
 }
 
-function RecordingCard({ rec, game, actions }: { rec: Recording; game: string | null; actions: Action[] }) {
+/**
+ * Memoised: a finished thumbnail replaces one recording in the library, and
+ * the query keeps every other recording's object, so only that card redraws.
+ */
+const RecordingCard = memo(function RecordingCard({
+  rec,
+  game,
+  actions,
+}: {
+  rec: Recording;
+  game: string | null;
+  actions: Action[];
+}) {
   const navigate = useNavigate();
   const [menuOpen, setMenuOpen] = useState(false);
   const duration = rec.info?.duration_s;
@@ -322,7 +337,7 @@ function RecordingCard({ rec, game, actions }: { rec: Recording; game: string | 
       </ContextMenuContent>
     </ContextMenu>
   );
-}
+});
 
 function Tag({ children, title }: { children: React.ReactNode; title?: string }) {
   return (

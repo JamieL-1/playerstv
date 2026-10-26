@@ -13,7 +13,8 @@ import { cn } from "@/lib/utils";
  * what's being recorded right now, with the main actions.
  */
 export function RecordingPanel({ snapshot }: { snapshot: Snapshot | null | undefined }) {
-  const now = useNow();
+  // Only the recording states show times that change.
+  const now = useNow(snapshot?.status.state === "recording");
 
   if (snapshot === undefined) return <Panel dot="bg-muted-foreground" title="Connecting…" />;
   if (snapshot === null) {

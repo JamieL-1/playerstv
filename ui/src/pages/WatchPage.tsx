@@ -17,7 +17,7 @@ import {
   Volume2,
   VolumeX,
 } from "lucide-react";
-import { useCallback, useEffect, useEffectEvent, useRef, useState } from "react";
+import { useCallback, useEffect, useEffectEvent, useRef, useState, type RefObject } from "react";
 import { useLocation, useNavigate, useSearchParams } from "react-router";
 import { toast } from "sonner";
 import { backend } from "@/api/backend";
@@ -40,6 +40,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { useConfig } from "@/hooks/useConfig";
 import { useExport } from "@/hooks/useExport";
 import { LIBRARY_KEY, useLibrary, useRename } from "@/hooks/useLibrary";
+import { usePlaybackTime } from "@/hooks/usePlaybackTime";
 import { formatElapsed, formatSize, nominalFps } from "@/lib/format";
 import { canPlay, defaultClipName, displayName, formatWhen, gameName } from "@/lib/library";
 import { clamp, formatPrecise, setIn, setOut, snapToFrame, type Range } from "@/lib/timeline";
@@ -97,7 +98,6 @@ function Watch(props: { rec: Recording; trimming: boolean; setTrimming: (on: boo
   const playable = canPlay(rec) && !failed;
   const fps = nominalFps(rec.info?.video?.fps ?? 0);
 
-  const [time, setTime] = useState(0);
   const [duration, setDuration] = useState(rec.info?.duration_s ?? 0);
   const [playing, setPlaying] = useState(false);
   const [rate, setRate] = useState(1);
@@ -125,24 +125,24 @@ function Watch(props: { rec: Recording; trimming: boolean; setTrimming: (on: boo
   const [renaming, setRenaming] = useState(false);
   const rename = useRename();
 
-  // Smooth playhead while playing (timeupdate only fires ~4×/s); in trim
-  // mode, playback loops inside the selection.
-  const onFrame = useEffectEvent(() => {
-    const v = video.current;
-    if (!v) return;
-    if (trimming && v.currentTime >= range.end) v.currentTime = range.start;
-    setTime(v.currentTime);
-  });
+  // The playhead isn't state here: re-rendering this whole page every frame
+  // was the player's main cost. Handlers read the video's own time, and the
+  // few things that show it follow it with <AtPlaybackTime>.
+  const currentTime = () => video.current?.currentTime ?? 0;
+
+  // In trim mode, playback loops inside the selection. Checked every frame
+  // without touching state, so nothing re-renders for it.
   useEffect(() => {
-    if (!playing) return;
+    const v = video.current;
+    if (!v || !playing || !trimming) return;
     let frame = 0;
     const tick = () => {
-      onFrame();
-      frame = requestAnimationFrame(tick);
+      if (v.currentTime >= range.end) v.currentTime = range.start;
+      frame = v.requestVideoFrameCallback(tick);
     };
-    frame = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(frame);
-  }, [playing]);
+    frame = v.requestVideoFrameCallback(tick);
+    return () => v.cancelVideoFrameCallback(frame);
+  }, [playing, trimming, range]);
 
   useEffect(() => {
     const v = video.current;
@@ -161,7 +161,6 @@ function Watch(props: { rec: Recording; trimming: boolean; setTrimming: (on: boo
       const v = video.current;
       if (!v) return;
       v.currentTime = clamp(t, 0, duration || v.duration || 0);
-      setTime(v.currentTime);
     },
     [duration],
   );
@@ -196,11 +195,13 @@ function Watch(props: { rec: Recording; trimming: boolean; setTrimming: (on: boo
 
   const markIn = () => {
     if (!trimming) setTrimming(true);
-    setRange((r) => setIn(r, snapToFrame(time, fps), duration));
+    const t = snapToFrame(currentTime(), fps);
+    setRange((r) => setIn(r, t, duration));
   };
   const markOut = () => {
     if (!trimming) setTrimming(true);
-    setRange((r) => setOut(r, snapToFrame(time, fps), duration));
+    const t = snapToFrame(currentTime(), fps);
+    setRange((r) => setOut(r, t, duration));
   };
 
   // Keyboard: YouTube-style, plus editor keys for trimming.
@@ -212,10 +213,10 @@ function Watch(props: { rec: Recording; trimming: boolean; setTrimming: (on: boo
     const actions: Record<string, () => void> = {
       " ": togglePlay,
       k: togglePlay,
-      j: () => seek(time - 10),
-      l: () => seek(time + 10),
-      arrowleft: () => seek(time - 5),
-      arrowright: () => seek(time + 5),
+      j: () => seek(currentTime() - 10),
+      l: () => seek(currentTime() + 10),
+      arrowleft: () => seek(currentTime() - 5),
+      arrowright: () => seek(currentTime() + 5),
       ",": () => step(-1),
       ".": () => step(1),
       home: () => seek(trimming ? range.start : 0),
@@ -336,8 +337,6 @@ function Watch(props: { rec: Recording; trimming: boolean; setTrimming: (on: boo
               onDoubleClick={() => toggleFullscreen()}
               onPlay={() => setPlaying(true)}
               onPause={() => setPlaying(false)}
-              onTimeUpdate={(e) => !playing && setTime(e.currentTarget.currentTime)}
-              onSeeked={(e) => setTime(e.currentTarget.currentTime)}
               onLoadedMetadata={(e) => {
                 const d = e.currentTarget.duration;
                 if (Number.isFinite(d) && d > 0) {
@@ -354,7 +353,11 @@ function Watch(props: { rec: Recording; trimming: boolean; setTrimming: (on: boo
                 showControls ? "opacity-100" : "opacity-0",
               )}
             >
-              <SeekBar time={time} duration={duration} selection={trimming ? range : null} onSeek={seek} />
+              <AtPlaybackTime video={video} playing={playing}>
+                {(time) => (
+                  <SeekBar time={time} duration={duration} selection={trimming ? range : null} onSeek={seek} />
+                )}
+              </AtPlaybackTime>
               <div className="flex items-center gap-1">
                 <ControlButton label={playing ? "Pause (K)" : "Play (K)"} onClick={togglePlay}>
                   {playing ? <Pause className="fill-current" /> : <Play className="fill-current" />}
@@ -383,7 +386,10 @@ function Watch(props: { rec: Recording; trimming: boolean; setTrimming: (on: boo
                   />
                 </div>
                 <span className="ml-2 text-sm tabular-nums">
-                  {formatElapsed(time)} / {formatElapsed(duration)}
+                  <AtPlaybackTime video={video} playing={playing}>
+                    {(time) => formatElapsed(time)}
+                  </AtPlaybackTime>{" "}
+                  / {formatElapsed(duration)}
                 </span>
                 <div className="flex-1" />
                 <DropdownMenu>
@@ -423,14 +429,18 @@ function Watch(props: { rec: Recording; trimming: boolean; setTrimming: (on: boo
 
         {trimming && playable && (
           <div className="shrink-0 space-y-3 rounded-lg bg-card p-4 ring-1 ring-border">
-            <TrimTimeline
-              time={time}
-              duration={duration}
-              fps={fps}
-              range={range}
-              onRangeChange={setRange}
-              onSeek={seek}
-            />
+            <AtPlaybackTime video={video} playing={playing}>
+              {(time) => (
+                <TrimTimeline
+                  time={time}
+                  duration={duration}
+                  fps={fps}
+                  range={range}
+                  onRangeChange={setRange}
+                  onSeek={seek}
+                />
+              )}
+            </AtPlaybackTime>
             <div className="flex flex-wrap items-center gap-2">
               <Button variant="secondary" size="sm" onClick={markIn}>
                 Set in <Kbd>I</Kbd>
@@ -499,6 +509,15 @@ function Watch(props: { rec: Recording; trimming: boolean; setTrimming: (on: boo
 
 function fail(e: unknown) {
   toast.error(String(e));
+}
+
+/** Renders `children` at the video's current time, following it every frame while playing. */
+function AtPlaybackTime(props: {
+  video: RefObject<HTMLVideoElement | null>;
+  playing: boolean;
+  children: (time: number) => React.ReactNode;
+}) {
+  return props.children(usePlaybackTime(props.video, props.playing));
 }
 
 function loadVolume(): { volume: number; muted: boolean } {
