@@ -67,7 +67,7 @@ export function UpdatesSection() {
       </div>
       <SettingRow
         label="Update automatically"
-        description="Check every few hours and download new versions in the background. They're installed when playerstv isn't recording, or the next time you open it."
+        description="Check every few hours and download new versions in the background. playerstv installs them when it isn't recording, or the next time you open it."
       >
         <Switch checked={draft.auto_update} onCheckedChange={(v) => update((c) => ({ ...c, auto_update: v }))} />
       </SettingRow>

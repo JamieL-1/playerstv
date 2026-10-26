@@ -507,7 +507,7 @@ function Watch(props: { rec: Recording; trimming: boolean; setTrimming: (on: boo
       <NameDialog
         open={renaming}
         title={`Rename ${rec.kind === "session" ? "session" : "clip"}`}
-        description="The file is renamed too, keeping its date and time at the end."
+        description="This renames the file too, keeping its date and time at the end."
         initial={displayName(rec)}
         confirm="Rename"
         onClose={() => setRenaming(false)}

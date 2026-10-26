@@ -291,18 +291,27 @@ fn exe_icon_rgba(exe: &Path) -> Option<(u32, u32, Vec<u8>)> {
 /// bitmaps GetIconInfo creates from it are.
 unsafe fn icon_rgba(icon: HICON) -> Option<(u32, u32, Vec<u8>)> {
     let mut info = ICONINFO::default();
-    GetIconInfo(icon, &mut info).ok()?;
+    // SAFETY: `icon` is valid (the caller's contract); `info` outlives the call.
+    unsafe { GetIconInfo(icon, &mut info) }.ok()?;
     let (color, mask) = (info.hbmColor, info.hbmMask);
     let result = (|| {
         let mut bm = BITMAP::default();
-        if GetObjectW(HGDIOBJ(color.0), size_of::<BITMAP>() as i32, Some((&mut bm as *mut BITMAP).cast())) == 0 {
+        // SAFETY: `bm` is a BITMAP and the call is told its exact size; a
+        // null `color` (monochrome icon) makes the call fail and return 0.
+        let read =
+            unsafe { GetObjectW(HGDIOBJ(color.0), size_of::<BITMAP>() as i32, Some((&mut bm as *mut BITMAP).cast())) };
+        if read == 0 {
             return None;
         }
         let (w, h) = (bm.bmWidth.max(0) as u32, bm.bmHeight.max(0) as u32);
-        let mut bgra = bitmap_bgra(color, w, h)?;
+        // SAFETY: `color` is live until the DeleteObject below, and `w`×`h`
+        // is its size, just read by GetObjectW.
+        let mut bgra = unsafe { bitmap_bgra(color, w, h) }?;
         // Old-style icons have no alpha channel: take transparency from the mask.
         if bgra.as_chunks::<4>().0.iter().all(|p| p[3] == 0) {
-            let m = bitmap_bgra(mask, w, h)?;
+            // SAFETY: `mask` is live until the DeleteObject below and is at
+            // least as big as `color` (taller for monochrome masks).
+            let m = unsafe { bitmap_bgra(mask, w, h) }?;
             for (p, m) in bgra.as_chunks_mut::<4>().0.iter_mut().zip(m.as_chunks::<4>().0.iter()) {
                 p[3] = if m[0] == 0 { 255 } else { 0 };
             }
@@ -312,8 +321,12 @@ unsafe fn icon_rgba(icon: HICON) -> Option<(u32, u32, Vec<u8>)> {
         }
         Some((w, h, bgra))
     })();
-    let _ = DeleteObject(HGDIOBJ(color.0));
-    let _ = DeleteObject(HGDIOBJ(mask.0));
+    // SAFETY: GetIconInfo created both bitmaps for us; they're deleted once,
+    // here, after the last use. Deleting a null handle just fails.
+    unsafe {
+        let _ = DeleteObject(HGDIOBJ(color.0));
+        let _ = DeleteObject(HGDIOBJ(mask.0));
+    }
     result
 }
 
@@ -338,9 +351,15 @@ unsafe fn bitmap_bgra(bitmap: HBITMAP, w: u32, h: u32) -> Option<Vec<u8>> {
         ..Default::default()
     };
     let mut buf = vec![0u8; (w * h * 4) as usize];
-    let dc = CreateCompatibleDC(None);
-    let lines = GetDIBits(dc, bitmap, 0, h, Some(buf.as_mut_ptr().cast()), &mut bmi, DIB_RGB_COLORS);
-    let _ = DeleteDC(dc);
+    // SAFETY: `bitmap` is live and at least `w`×`h` (the caller's contract);
+    // `buf` holds `h` rows of `w` 32-bit pixels, as `bmi` describes. The DC
+    // is created and deleted here.
+    let lines = unsafe {
+        let dc = CreateCompatibleDC(None);
+        let lines = GetDIBits(dc, bitmap, 0, h, Some(buf.as_mut_ptr().cast()), &mut bmi, DIB_RGB_COLORS);
+        let _ = DeleteDC(dc);
+        lines
+    };
     (lines == h as i32).then_some(buf)
 }
 

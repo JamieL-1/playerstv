@@ -79,7 +79,7 @@ function RestoreDefaultsButton() {
     try {
       const defaults = await backend.defaultConfig();
       update((c) => restoreDefaults(c, defaults));
-      toast("Defaults restored — Save Changes to keep them, or Reset to undo.");
+      toast("Defaults restored. Click Save changes to keep them, or Reset to undo.");
     } catch (e) {
       toast.error(String(e));
     }
@@ -96,7 +96,7 @@ function RestoreDefaultsButton() {
           <AlertDialogTitle>Restore default recording settings?</AlertDialogTitle>
           <AlertDialogDescription>
             Recording, video, audio, hotkey and storage settings are reset and every game's customizations are cleared.
-            Nothing changes until you click Save Changes.
+            Nothing changes until you click Save changes.
           </AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter>

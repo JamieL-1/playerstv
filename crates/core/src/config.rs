@@ -741,7 +741,7 @@ mod tests {
         assert_eq!(cfg.games.len(), 3);
     }
 
-    fn game_mut<'a>(cfg: &'a mut Config, id: &str) -> &'a mut GameOverrides {
+    fn game_mut<'cfg>(cfg: &'cfg mut Config, id: &str) -> &'cfg mut GameOverrides {
         &mut cfg.games.iter_mut().find(|g| g.id == id).unwrap().overrides
     }
 
