@@ -11,8 +11,18 @@ export function useStatus(): Snapshot | null | undefined {
   const [snapshot, setSnapshot] = useState<Snapshot | null | undefined>(undefined);
   useEffect(() => {
     let alive = true;
-    backend.getStatus().then((s) => alive && setSnapshot(s));
-    const unlisten = events.onStatus((s) => alive && setSnapshot(s));
+    let heardEvent = false;
+    const unlisten = events.onStatus((s) => {
+      heardEvent = true;
+      if (alive) setSnapshot(s);
+    });
+    // The backend only sends changes, so listen before fetching: a change
+    // between the two would otherwise be missed until the next one. An
+    // event that arrives first is newer than the fetch's answer.
+    unlisten
+      .catch(() => {})
+      .then(() => backend.getStatus())
+      .then((s) => alive && !heardEvent && setSnapshot(s));
     return () => {
       alive = false;
       unlisten.then((f) => f());

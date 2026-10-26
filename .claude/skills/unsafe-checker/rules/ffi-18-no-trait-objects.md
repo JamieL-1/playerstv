@@ -93,25 +93,32 @@ struct CCompatibleHandler {
     vtable: *const HandlerVtable,
 }
 
+extern "C" fn handle_impl<H: Handler>(this: *const c_void, data: c_int) {
+    let handler = unsafe { &*(this as *const H) };
+    handler.handle(data as i32);
+}
+
+extern "C" fn drop_impl<H: Handler>(this: *mut c_void) {
+    unsafe { drop(Box::from_raw(this as *mut H)); }
+}
+
+/// One vtable per handler type, so its functions always match the data.
+/// (A `static` inside a generic fn can't name `H`, and one built for a
+/// single concrete type would read and free other handlers as that type.)
+struct VtableFor<H>(std::marker::PhantomData<H>);
+
+impl<H: Handler + 'static> VtableFor<H> {
+    const VTABLE: &'static HandlerVtable = &HandlerVtable {
+        handle: handle_impl::<H>,
+        drop: drop_impl::<H>,
+    };
+}
+
 impl CCompatibleHandler {
     fn new<H: Handler + 'static>(handler: H) -> Self {
-        extern "C" fn handle_impl<H: Handler>(this: *const c_void, data: c_int) {
-            let handler = unsafe { &*(this as *const H) };
-            handler.handle(data as i32);
-        }
-
-        extern "C" fn drop_impl<H: Handler>(this: *mut c_void) {
-            unsafe { drop(Box::from_raw(this as *mut H)); }
-        }
-
-        static VTABLE: HandlerVtable = HandlerVtable {
-            handle: handle_impl::<ConcreteHandler>,  // Need concrete type
-            drop: drop_impl::<ConcreteHandler>,
-        };
-
         Self {
             data: Box::into_raw(Box::new(handler)) as *mut c_void,
-            vtable: &VTABLE,
+            vtable: VtableFor::<H>::VTABLE,
         }
     }
 

@@ -55,8 +55,8 @@ extern "C" {
     fn remove_callback();
 }
 
-// DO: Use trampoline pattern
-fn good_closure<F: FnMut(i32) -> i32>(mut closure: F) {
+// DO: Use trampoline pattern, and unregister before the closure goes away
+fn with_callback<F: FnMut(i32) -> i32, R>(mut closure: F, run: impl FnOnce() -> R) -> R {
     // Trampoline function that forwards to the closure
     extern "C" fn trampoline<F: FnMut(i32) -> i32>(
         value: c_int,
@@ -66,22 +66,33 @@ fn good_closure<F: FnMut(i32) -> i32>(mut closure: F) {
         closure(value as i32) as c_int
     }
 
-    let user_data = &mut closure as *mut F as *mut c_void;
-
-    unsafe {
-        set_callback(trampoline::<F>, user_data);
-        // Important: closure must live until callback is removed!
+    // Unregisters on the way out, even if `run` panics. Declared after
+    // `closure`, so it's dropped (and C stops calling) before `closure` is.
+    struct Unregister;
+    impl Drop for Unregister {
+        fn drop(&mut self) {
+            unsafe { remove_callback(); }
+        }
     }
+
+    let user_data = &mut closure as *mut F as *mut c_void;
+    unsafe { set_callback(trampoline::<F>, user_data); }
+    let _unregister = Unregister;
+    run()
 }
 
-// DO: Box the closure for 'static lifetime
+// DO: Box the closure for 'static lifetime, at an address that doesn't move
 struct CallbackHandle {
-    closure: Box<dyn FnMut(i32) -> i32>,
+    // Boxed twice: C gets a thin pointer to the inner Box, which lives on
+    // the heap however the handle itself is moved. (A pointer to a plain
+    // `Box` field would point into the handle and dangle once it moved.)
+    closure: Box<Box<dyn FnMut(i32) -> i32>>,
+    registered: bool,
 }
 
 impl CallbackHandle {
     fn new<F: FnMut(i32) -> i32 + 'static>(closure: F) -> Self {
-        Self { closure: Box::new(closure) }
+        Self { closure: Box::new(Box::new(closure)), registered: false }
     }
 
     fn register(&mut self) {
@@ -90,14 +101,17 @@ impl CallbackHandle {
             closure(value as i32) as c_int
         }
 
-        let user_data = &mut self.closure as *mut _ as *mut c_void;
+        let user_data = &mut *self.closure as *mut Box<dyn FnMut(i32) -> i32> as *mut c_void;
         unsafe { set_callback(trampoline, user_data); }
+        self.registered = true;
     }
 }
 
 impl Drop for CallbackHandle {
     fn drop(&mut self) {
-        unsafe { remove_callback(); }
+        if self.registered {
+            unsafe { remove_callback(); }
+        }
         // Now safe to drop closure
     }
 }

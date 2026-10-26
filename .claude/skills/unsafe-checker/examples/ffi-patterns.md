@@ -71,8 +71,8 @@ impl Drop for Library {
     }
 }
 
-// Prevent accidental copies
-impl !Clone for Library {}
+// No Clone or Copy impl (and no derive): a copy would free the library twice.
+// (`impl !Clone` would say the same, but negative impls are unstable.)
 ```
 
 ## Pattern 2: Callback Registration

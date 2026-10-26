@@ -13,6 +13,7 @@ use crossbeam_channel::{Receiver, Sender};
 use ptv_common::paths;
 use ptv_common::process::{bind_to_our_lifetime, CREATE_NO_WINDOW};
 use ptv_common::sync::lock;
+use ptv_core::clip::Decode;
 use tauri::{AppHandle, Emitter};
 
 use crate::library::Recording;
@@ -123,8 +124,20 @@ fn make(job: &Job) -> Result<(), String> {
     // Written under another name and renamed, so the window never loads a
     // half-written JPEG.
     let part = job.thumb.with_extension("part");
+    // An explicit `-hwaccel cuda` fails outright, rather than decoding in
+    // software, when CUDA can't start (no NVIDIA driver, say), so a failed
+    // NVDEC attempt is retried on the CPU.
+    extract(job, &part, Decode::Gpu).or_else(|e| {
+        tracing::debug!("thumbnail for {} on the GPU: {e}; retrying on the CPU", job.source);
+        extract(job, &part, Decode::Cpu)
+    })?;
+    std::fs::rename(&part, &job.thumb).map_err(|e| e.to_string())
+}
+
+/// Runs ffmpeg to write the thumbnail to `part`.
+fn extract(job: &Job, part: &Path, decode: Decode) -> Result<(), String> {
     let mut child = Command::new(paths::ffmpeg_exe())
-        .args(args(&job.source, job.at_s, &part))
+        .args(args(&job.source, job.at_s, part, decode))
         .creation_flags(CREATE_NO_WINDOW)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -140,26 +153,29 @@ fn make(job: &Job) -> Result<(), String> {
         if started.elapsed() > TIMEOUT {
             let _ = child.kill();
             let _ = child.wait();
-            let _ = std::fs::remove_file(&part);
+            let _ = std::fs::remove_file(part);
             return Err("ffmpeg timed out".into());
         }
         std::thread::sleep(Duration::from_millis(50));
     };
     if !status.success() || !part.exists() {
-        let _ = std::fs::remove_file(&part);
+        let _ = std::fs::remove_file(part);
         return Err(format!("ffmpeg failed ({status})"));
     }
-    std::fs::rename(&part, &job.thumb).map_err(|e| e.to_string())
+    Ok(())
 }
 
-fn args(source: &str, at_s: f64, out: &Path) -> Vec<String> {
+fn args(source: &str, at_s: f64, out: &Path, decode: Decode) -> Vec<String> {
     let mut a: Vec<String> = ["-hide_banner", "-nostdin", "-loglevel", "error", "-y"].map(String::from).to_vec();
+    // NVDEC when it can (FFmpeg's software AV1 decoder can't read 4K120 AV1
+    // at all); frames come back to the CPU for scaling.
+    if decode == Decode::Gpu {
+        a.extend(["-hwaccel", "cuda"].map(String::from));
+    }
     // Any frame near `at_s` makes a fine thumbnail, so only keyframes are
     // decoded and the one at or before `at_s` is used as it is: a fraction
-    // of the work of decoding up to it. NVDEC does the decoding when it can
-    // (FFmpeg's software AV1 decoder can't read 4K120 AV1 at all) and frames
-    // come back to the CPU for scaling; without CUDA it decodes in software.
-    a.extend(["-hwaccel", "cuda", "-skip_frame", "nokey", "-noaccurate_seek", "-ss"].map(String::from));
+    // of the work of decoding up to it.
+    a.extend(["-skip_frame", "nokey", "-noaccurate_seek", "-ss"].map(String::from));
     a.extend([format!("{at_s:.3}"), "-i".into(), source.to_owned()]);
     a.extend(["-frames:v", "1", "-vf", "scale=480:-2", "-q:v", "4", "-f", "mjpeg"].map(String::from));
     a.push(out.display().to_string());
@@ -198,9 +214,16 @@ mod tests {
 
     #[test]
     fn seeks_before_input() {
-        let a = args(r"C:\v\a.mp4", 1.25, Path::new(r"C:\t\k.part")).join(" ");
+        let a = args(r"C:\v\a.mp4", 1.25, Path::new(r"C:\t\k.part"), Decode::Gpu).join(" ");
         assert!(a.contains("-hwaccel cuda -skip_frame nokey -noaccurate_seek"), "{a}");
         assert!(a.contains(r"-noaccurate_seek -ss 1.250 -i C:\v\a.mp4 -frames:v 1 -vf scale=480:-2"), "{a}");
         assert!(a.ends_with(r"-f mjpeg C:\t\k.part"));
+    }
+
+    #[test]
+    fn the_cpu_fallback_asks_for_no_hardware() {
+        let a = args(r"C:\v\a.mp4", 1.25, Path::new(r"C:\t\k.part"), Decode::Cpu).join(" ");
+        assert!(!a.contains("hwaccel"), "{a}");
+        assert!(a.contains("-skip_frame nokey -noaccurate_seek -ss 1.250"), "{a}");
     }
 }

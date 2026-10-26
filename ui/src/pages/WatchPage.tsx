@@ -143,6 +143,20 @@ function Watch(props: { rec: Recording; trimming: boolean; setTrimming: (on: boo
     frame = v.requestVideoFrameCallback(tick);
     return () => v.cancelVideoFrameCallback(frame);
   }, [playing, trimming, range]);
+  // A selection that runs to the end of the file never sees a frame at
+  // `range.end` (the last one starts a frame earlier): playback just ends,
+  // so loop from here. Not tied to `playing`, which turns false on the
+  // `pause` that comes just before `ended`.
+  useEffect(() => {
+    const v = video.current;
+    if (!v || !trimming) return;
+    const loop = () => {
+      v.currentTime = range.start;
+      v.play().catch(() => {});
+    };
+    v.addEventListener("ended", loop);
+    return () => v.removeEventListener("ended", loop);
+  }, [trimming, range.start]);
 
   useEffect(() => {
     const v = video.current;

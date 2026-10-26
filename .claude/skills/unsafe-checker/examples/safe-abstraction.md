@@ -91,8 +91,8 @@ impl Drop for CBuffer {
     }
 }
 
-// Prevent double-free
-impl !Clone for CBuffer {}
+// No Clone or Copy impl (and no derive): a copy would free the buffer twice.
+// (`impl !Clone` would say the same, but negative impls are unstable.)
 
 // Safe to send between threads (assuming c_alloc is thread-safe)
 unsafe impl Send for CBuffer {}
@@ -102,6 +102,7 @@ unsafe impl Send for CBuffer {}
 
 ```rust
 use std::cell::UnsafeCell;
+use std::marker::PhantomData;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 /// A simple spinlock demonstrating safe abstraction over UnsafeCell.
@@ -112,6 +113,10 @@ pub struct SpinLock<T> {
 
 pub struct SpinLockGuard<'a, T> {
     lock: &'a SpinLock<T>,
+    // Opts out of the auto Send/Sync impls: with only `&SpinLock<T>`, the
+    // guard would be Sync whenever T: Send, letting two threads share one
+    // guard to a non-Sync T (a Cell, say) and write it at once.
+    _not_send_sync: PhantomData<*const ()>,
 }
 
 impl<T> SpinLock<T> {
@@ -132,7 +137,7 @@ impl<T> SpinLock<T> {
         ).is_err() {
             std::hint::spin_loop();
         }
-        SpinLockGuard { lock: self }
+        SpinLockGuard { lock: self, _not_send_sync: PhantomData }
     }
 }
 
@@ -161,6 +166,9 @@ impl<T> Drop for SpinLockGuard<'_, T> {
 // SAFETY: The lock ensures only one thread accesses data at a time
 unsafe impl<T: Send> Sync for SpinLock<T> {}
 unsafe impl<T: Send> Send for SpinLock<T> {}
+// SAFETY: a shared guard only hands out `&T`, which is fine across threads
+// exactly when T: Sync (the same rule as std::sync::MutexGuard).
+unsafe impl<T: Sync> Sync for SpinLockGuard<'_, T> {}
 ```
 
 ## Example 4: Iterator with Lifetime Tracking

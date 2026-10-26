@@ -85,8 +85,8 @@ impl Drop for ResourceHandle {
     }
 }
 
-// Prevent accidental copies that would cause double-free
-impl !Clone for ResourceHandle {}
+// No Clone or Copy impl (and no derive): a copy would free the resource twice.
+// (`impl !Clone` would say the same, but negative impls are unstable.)
 
 // DO: Document ownership transfer
 impl ResourceHandle {
