@@ -17,8 +17,11 @@ Supported games are Old School RuneScape (RuneLite), League of Legends
   while recording a session.
 - The window has a library, a player and a frame-exact trim editor.
 
-On an RTX 5080 recording RuneLite at 1900×1030, 60 fps: about 0.5% CPU, 11%
-NVENC and 9 MB of memory. A 30 s buffer takes about 40 MB of disk.
+On an RTX 5080 recording RuneLite at 1900×1030, 60 fps: about 0.5% CPU and
+11% NVENC. playerstv itself uses about 9 MB of memory, and the ffmpeg
+encoder it runs uses about 250 MB more while recording. A 30 s buffer takes
+about 40 MB of disk. [BENCHMARKS.md](BENCHMARKS.md) explains how to measure
+this and compare it with other recorders.
 
 ## Download
 
@@ -104,6 +107,8 @@ For live reload, run `npm run dev` in `ui/`, then
 - `crates/common`: paths, the control pipe and process helpers.
 - `crates/app`: the tray, hotkeys, the recording supervisor and the updater.
 - `crates/ui`: builds `playerstv.exe` and the window's Tauri backend.
+- `crates/bench`: the benchmark harness and its test game. Not shipped; see
+  [BENCHMARKS.md](BENCHMARKS.md).
 - `ui/`: the window's React frontend.
 
 FFmpeg writes 2-second segments to disk. Saving a clip joins the newest

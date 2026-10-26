@@ -1,6 +1,9 @@
 [workspace]
 resolver = "2"
-members = ["crates/core", "crates/capture", "crates/common", "crates/app", "crates/ui"]
+members = ["crates/core", "crates/capture", "crates/common", "crates/app", "crates/ui", "crates/bench"]
+# The benchmark harness isn't shipped, so a plain `cargo build` skips it.
+# `--workspace` (CI's clippy and tests) still covers it.
+default-members = ["crates/core", "crates/capture", "crates/common", "crates/app", "crates/ui"]
 
 [workspace.package]
 version = "0.4.0"
@@ -15,6 +18,8 @@ regex = "1"
 tracing = "0.1"
 chrono = "0.4"
 crossbeam-channel = "0.5"
+clap = { version = "4.6", features = ["derive"] }
+criterion = "0.8"
 
 [profile.release]
 lto = "thin"

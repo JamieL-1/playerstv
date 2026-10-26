@@ -5,3 +5,6 @@
 
 # Tauri-generated schemas
 /crates/ui/gen
+
+# Benchmark runs (scripts/bench.ps1). Reports worth keeping go in bench/published.
+/bench/results
