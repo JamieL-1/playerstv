@@ -15,6 +15,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let dev = dev?;
         let mark = if dev.get_id()? == default_id { " (default)" } else { "" };
         println!("{}{mark}", dev.get_friendlyname()?);
+        // SAFETY: COM calls on interfaces we hold, on this MTA thread.
         unsafe {
             let mgr: IAudioSessionManager2 = dev.as_immdevice().Activate(CLSCTX_ALL, None)?;
             let sessions = mgr.GetSessionEnumerator()?;

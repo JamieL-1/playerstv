@@ -55,7 +55,7 @@ fn find_moov<R: Read + Seek>(r: &mut R) -> Result<Vec<u8>> {
         if r.read_exact(&mut head).is_err() {
             bail!("no moov box (unfinished or not an MP4)");
         }
-        let mut size = u32::from_be_bytes(head[..4].try_into().unwrap()) as u64;
+        let mut size = u32::from_be_bytes(head[..4].try_into().expect("4 of 8 bytes")) as u64;
         let mut header_len = 8;
         if size == 1 {
             let mut large = [0u8; 8];
@@ -90,11 +90,11 @@ fn boxes(mut data: &[u8]) -> impl Iterator<Item = (&[u8; 4], &[u8])> {
         if data.len() < 8 {
             return None;
         }
-        let size32 = u32::from_be_bytes(data[..4].try_into().unwrap()) as usize;
-        let kind: &[u8; 4] = data[4..8].try_into().unwrap();
+        let size32 = u32::from_be_bytes(data[..4].try_into().expect("len >= 8")) as usize;
+        let kind: &[u8; 4] = data[4..8].try_into().expect("len >= 8");
         let (size, header) = match size32 {
             0 => (data.len(), 8),
-            1 if data.len() >= 16 => (u64::from_be_bytes(data[8..16].try_into().unwrap()) as usize, 16),
+            1 if data.len() >= 16 => (u64::from_be_bytes(data[8..16].try_into().expect("len >= 16")) as usize, 16),
             _ => (size32, 8),
         };
         if size < header || size > data.len() {

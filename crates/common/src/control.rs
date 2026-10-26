@@ -6,7 +6,7 @@
 
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
-use std::os::windows::io::FromRawHandle;
+use std::os::windows::io::{AsRawHandle, FromRawHandle};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -40,8 +40,10 @@ fn is_transient(e: &std::io::Error) -> bool {
 pub fn tray_running() -> bool {
     use windows::Win32::Foundation::CloseHandle;
     use windows::Win32::System::Threading::{OpenMutexW, SYNCHRONIZATION_SYNCHRONIZE};
+    // SAFETY: plain FFI call; a handle it returns is closed straight away.
     match unsafe { OpenMutexW(SYNCHRONIZATION_SYNCHRONIZE, false, &crate::paths::mutex_name("tray")) } {
         Ok(h) => {
+            // SAFETY: `h` was just opened and is closed only here.
             unsafe {
                 let _ = CloseHandle(h);
             }
@@ -52,7 +54,7 @@ pub fn tray_running() -> bool {
 }
 
 /// Everything the window needs to draw its status card.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Snapshot {
     pub status: Status,
     pub buffer_seconds: u32,
@@ -138,26 +140,33 @@ impl Request {
 /// the tray again.
 pub struct QuitSignal(HANDLE);
 
-// A kernel event handle may be used from any thread.
+// SAFETY: kernel event handles may be used from any thread, and the event
+// calls below (set, reset, wait) are thread-safe in Windows itself.
 unsafe impl Send for QuitSignal {}
+// SAFETY: as for Send; `&self` methods only set, reset or wait on the event.
 unsafe impl Sync for QuitSignal {}
 
+// Every `unsafe` below calls Windows with `self.0`, the event handle `open`
+// created, which stays valid until `drop` closes it.
 impl QuitSignal {
     pub fn open() -> Result<Self> {
         use windows::Win32::System::Threading::CreateEventW;
         // Manual reset: stays set for every waiting window.
+        // SAFETY: plain FFI call; the handle it returns is owned by Self.
         let handle = unsafe { CreateEventW(None, true, false, &crate::paths::mutex_name("quit")) }?;
         Ok(Self(handle))
     }
 
     /// Called by a starting tray: a window from before a quit mustn't close.
     pub fn reset(&self) {
+        // SAFETY: see the impl's comment.
         unsafe {
             let _ = windows::Win32::System::Threading::ResetEvent(self.0);
         }
     }
 
     pub fn set(&self) {
+        // SAFETY: see the impl's comment.
         unsafe {
             let _ = windows::Win32::System::Threading::SetEvent(self.0);
         }
@@ -166,6 +175,7 @@ impl QuitSignal {
     /// Blocks until the tray quits.
     pub fn wait(&self) {
         use windows::Win32::System::Threading::{WaitForSingleObject, INFINITE};
+        // SAFETY: see the impl's comment.
         unsafe {
             WaitForSingleObject(self.0, INFINITE);
         }
@@ -174,6 +184,7 @@ impl QuitSignal {
 
 impl Drop for QuitSignal {
     fn drop(&mut self) {
+        // SAFETY: we own the handle; this is the only place it's closed.
         unsafe {
             let _ = windows::Win32::Foundation::CloseHandle(self.0);
         }
@@ -206,6 +217,7 @@ pub fn serve(snapshot: Arc<Mutex<Snapshot>>, on_request: impl Fn(Request) + Send
 }
 
 fn serve_one(snapshot: &Mutex<Snapshot>, on_request: &impl Fn(Request)) -> Result<()> {
+    // SAFETY: plain FFI call; the handle is checked below.
     let handle = unsafe {
         CreateNamedPipeW(
             &windows::core::HSTRING::from(crate::paths::control_pipe()),
@@ -221,17 +233,22 @@ fn serve_one(snapshot: &Mutex<Snapshot>, on_request: &impl Fn(Request)) -> Resul
     if handle.is_invalid() {
         bail!("CreateNamedPipe failed: {}", windows::core::Error::from_thread());
     }
-    // From here the File owns (and will close) the handle.
+    // SAFETY: `handle` is a valid pipe handle that nothing else owns; from
+    // here the File owns it and closes it when dropped.
     let file = unsafe { File::from_raw_handle(handle.0) };
-    match unsafe { ConnectNamedPipe(handle, None) } {
+    // Borrowed from `file`, which keeps it open for the calls below.
+    let pipe = HANDLE(file.as_raw_handle());
+    // SAFETY: `pipe` is open (see above).
+    match unsafe { ConnectNamedPipe(pipe, None) } {
         Ok(()) => {}
         Err(e) if e.code() == ERROR_PIPE_CONNECTED.to_hresult() => {}
         Err(e) => return Err(e).context("ConnectNamedPipe"),
     }
     let result = answer(&file, snapshot, on_request);
+    // SAFETY: `pipe` is still open: `file` is dropped after this.
     unsafe {
-        let _ = FlushFileBuffers(HANDLE(handle.0));
-        let _ = DisconnectNamedPipe(HANDLE(handle.0));
+        let _ = FlushFileBuffers(pipe);
+        let _ = DisconnectNamedPipe(pipe);
     }
     result
 }
@@ -241,7 +258,7 @@ fn answer(file: &File, snapshot: &Mutex<Snapshot>, on_request: &impl Fn(Request)
     BufReader::new(file).read_line(&mut line)?;
     let request = Request::parse(line.trim()).with_context(|| format!("unknown request {line:?}"))?;
     on_request(request);
-    let reply = serde_json::to_string(&*snapshot.lock().unwrap())?;
+    let reply = serde_json::to_string(&*crate::sync::lock(snapshot))?;
     let mut file = file;
     writeln!(file, "{reply}")?;
     Ok(())
@@ -278,6 +295,7 @@ mod tests {
         // Own pipe/mutex names so this never talks to a real tray instance.
         std::env::set_var("PLAYERSTV_INSTANCE", format!("unittest-{}", std::process::id()));
         // Hold the tray mutex like the real tray does.
+        // SAFETY: plain FFI call; the handle is held until the test process exits.
         let _mutex = unsafe {
             windows::Win32::System::Threading::CreateMutexW(None, false, &crate::paths::mutex_name("tray")).unwrap()
         };

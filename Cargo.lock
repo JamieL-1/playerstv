@@ -2725,6 +2725,7 @@ dependencies = [
  "anyhow",
  "base64 0.22.1",
  "chrono",
+ "crossbeam-channel",
  "global-hotkey",
  "notify",
  "playerstv-capture",

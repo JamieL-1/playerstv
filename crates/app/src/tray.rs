@@ -12,6 +12,7 @@ use anyhow::{Context, Result};
 use global_hotkey::hotkey::HotKey;
 use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState};
 use notify::{RecursiveMode, Watcher};
+use ptv_common::sync::lock;
 use ptv_core::clip::ExportKind;
 use ptv_core::config::Config;
 use tauri_winrt_notification::Toast;
@@ -131,8 +132,10 @@ impl HotKeys {
 
 /// Runs the tray until Quit; `show_window` also opens the window once it's up.
 pub fn run(mut cfg: Config, show_window: bool) -> Result<()> {
+    // SAFETY: plain FFI call with no preconditions.
     let thread_id = unsafe { GetCurrentThreadId() };
     // Make sure this thread has a message queue before anyone posts to it.
+    // SAFETY: `msg` outlives the call; PM_NOREMOVE leaves the queue as it is.
     unsafe {
         let mut msg = MSG::default();
         let _ = PeekMessageW(&mut msg, None, 0, 0, PM_NOREMOVE);
@@ -142,6 +145,8 @@ pub fn run(mut cfg: Config, show_window: bool) -> Result<()> {
         let tx = tx.clone();
         Arc::new(move |e: AppEvent| {
             let _ = tx.send(e);
+            // SAFETY: posting to a thread id is safe from any thread; if the
+            // main thread has gone, the call just fails.
             unsafe {
                 let _ = PostThreadMessageW(thread_id, WM_WAKE, Default::default(), Default::default());
             }
@@ -280,6 +285,8 @@ pub fn run(mut cfg: Config, show_window: bool) -> Result<()> {
     let mut restart_with: Option<&[&str]> = None;
 
     // Ticks once a second to keep the "REC 12:34" labels current.
+    // SAFETY: a thread timer (no window, no callback): it arrives as
+    // WM_TIMER in this thread's loop below and is killed on the way out.
     let timer = unsafe { SetTimer(None, 0, 1000, None) };
 
     let mut status = Status::Waiting;
@@ -287,6 +294,8 @@ pub fn run(mut cfg: Config, show_window: bool) -> Result<()> {
     let mut last_saved: Option<PathBuf> = None;
 
     let mut msg = MSG::default();
+    // SAFETY: a standard message loop (GetMessageW here, Translate/Dispatch
+    // below) on the thread that owns the queue; `msg` outlives each call.
     'outer: while unsafe { GetMessageW(&mut msg, None, 0, 0) }.as_bool() {
         if msg.message == WM_TIMER && msg.hwnd.is_invalid() {
             let window_open = unix_now().saturating_sub(window_polled.load(Ordering::Relaxed))
@@ -312,6 +321,7 @@ pub fn run(mut cfg: Config, show_window: bool) -> Result<()> {
             continue;
         }
         if msg.message != WM_WAKE {
+            // SAFETY: see the loop's comment.
             unsafe {
                 let _ = TranslateMessage(&msg);
                 DispatchMessageW(&msg);
@@ -458,13 +468,13 @@ pub fn run(mut cfg: Config, show_window: bool) -> Result<()> {
                 }
             }
         }
-        *snapshot.lock().unwrap() =
-            snapshot_of(&cfg, &status, last_saved.clone(), pending_update.as_ref(), &update_state);
+        *lock(&snapshot) = snapshot_of(&cfg, &status, last_saved.clone(), pending_update.as_ref(), &update_state);
     }
 
     tracing::info!("shutting down");
     drop(check_update);
     quit_signal.set();
+    // SAFETY: `timer` is the thread timer set above, killed only here.
     unsafe {
         let _ = KillTimer(None, timer);
     }
@@ -595,6 +605,7 @@ pub fn toast(title: &str, text: &str) {
     // next toast crashed. Holding a usage reference keeps it alive for good.
     static MTA: std::sync::Once = std::sync::Once::new();
     MTA.call_once(|| {
+        // SAFETY: plain FFI call; the usage cookie is deliberately never released.
         if let Err(e) = unsafe { windows::Win32::System::Com::CoIncrementMTAUsage() } {
             tracing::warn!("CoIncrementMTAUsage failed: {e}");
         }

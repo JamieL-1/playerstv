@@ -12,14 +12,22 @@ use tauri::{AppHandle, Emitter};
 
 const POLL: Duration = Duration::from_millis(500);
 
-/// Polls the tray for the life of the app and emits every result.
+/// Polls the tray for the life of the app and emits each change. Polling
+/// carries on even when nothing changes: the tray treats it as the window's
+/// heartbeat (it only installs updates while the window is closed).
 pub fn start_poller(app: AppHandle) {
     std::thread::Builder::new()
         .name("status-poller".into())
-        .spawn(move || loop {
-            let snapshot = control::request(Request::Status).ok();
-            let _ = app.emit("status", &snapshot);
-            std::thread::sleep(POLL);
+        .spawn(move || {
+            let mut last = None;
+            loop {
+                let snapshot = control::request(Request::Status).ok();
+                if last.as_ref() != Some(&snapshot) {
+                    let _ = app.emit("status", &snapshot);
+                    last = Some(snapshot);
+                }
+                std::thread::sleep(POLL);
+            }
         })
         .expect("spawn status poller");
 }

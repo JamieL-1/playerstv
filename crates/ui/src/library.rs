@@ -9,6 +9,7 @@ use std::time::{Duration, SystemTime};
 
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use ptv_common::paths;
+use ptv_common::sync::lock;
 use ptv_core::clip;
 use ptv_core::config::Config;
 use ptv_core::media::MediaInfo;
@@ -114,7 +115,7 @@ fn allow_assets(app: &AppHandle, dir: &Path) {
 /// Watches `dir` (recursively) unless it already is; true if it changed.
 fn watch(app: &AppHandle, dir: &Path) -> bool {
     let lib = app.state::<Library>();
-    let mut inner = lib.inner.lock().unwrap();
+    let mut inner = lock(&lib.inner);
     if inner.watching.as_ref().is_some_and(|(d, _)| d == dir) {
         return false;
     }
@@ -220,7 +221,7 @@ pub async fn list_recordings(app: AppHandle) -> Result<Vec<Recording>, String> {
         let lib = app.state::<Library>();
         let recs = storage::scan(&cfg.output_dir);
         let mut out = {
-            let mut inner = lib.inner.lock().unwrap();
+            let mut inner = lock(&lib.inner);
             let (out, changed) = build(recs, &mut inner.cache, |p| match ptv_core::media::probe(p) {
                 Ok(info) => Some(info),
                 Err(e) => {
@@ -304,7 +305,7 @@ impl Library {
         if old == new {
             return;
         }
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = lock(&self.inner);
         let Some(entry) = inner.cache.remove(old) else { return };
         self.thumbs.moved(&old.display().to_string(), &new.display().to_string(), entry.size, entry.modified_ms / 1000);
         inner.cache.insert(new.to_owned(), entry);
@@ -332,6 +333,8 @@ fn recycle(file: &Path) -> Result<(), String> {
         fFlags: (FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_NOERRORUI | FOF_SILENT).0 as u16,
         ..Default::default()
     };
+    // SAFETY: `op.pFrom` points into `from`, a double-NUL-terminated list
+    // that outlives this synchronous call.
     let code = unsafe { SHFileOperationW(&mut op) };
     if code != 0 || op.fAnyOperationsAborted.as_bool() {
         return Err(format!("couldn't delete {} (error {code:#x}); is it open in another app?", file.display()));

@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use ptv_core::profile::{GameProfile, ProfileMatcher};
 use windows::core::{BOOL, PWSTR};
 use windows::Win32::Foundation::{CloseHandle, HWND, LPARAM, RECT};
@@ -20,25 +22,24 @@ pub struct GameWindow {
 /// Scans top-level windows and returns the first one matching a profile.
 /// Profiles earlier in the list win.
 pub fn find_game(matchers: &[ProfileMatcher]) -> Option<GameWindow> {
-    let mut windows: Vec<(HWND, u32, String)> = Vec::new();
-    unsafe {
-        let _ = EnumWindows(Some(collect_window), LPARAM(&mut windows as *mut Vec<(HWND, u32, String)> as isize));
-    }
+    let windows = visible_windows();
     // Title regexes are cheap; looking up a process's exe is a system call.
-    // So check titles first and look each exe up at most once, only for
-    // windows whose title some profile matches (usually none).
-    let mut exes: Vec<Option<Option<String>>> = vec![None; windows.len()];
+    // So check titles first and look each process's exe up at most once,
+    // only for windows whose title some profile matches. That's usually
+    // none, but a custom game's `.*` matches every window, and one process
+    // (Explorer, a browser) often owns many of them.
+    let mut exes: HashMap<u32, Option<String>> = HashMap::new();
     for m in matchers {
-        for (i, (hwnd, pid, title)) in windows.iter().enumerate() {
-            if !m.title_matches(title) {
+        for w in &windows {
+            if !m.title_matches(&w.title) {
                 continue;
             }
-            let exe = exes[i].get_or_insert_with(|| exe_name(*pid));
-            if exe.as_deref().is_some_and(|e| m.matches(e, title)) {
+            let exe = exes.entry(w.pid).or_insert_with(|| exe_name(w.pid));
+            if exe.as_deref().is_some_and(|e| m.matches(e, &w.title)) {
                 return Some(GameWindow {
-                    hwnd: hwnd.0 as u64,
-                    pid: *pid,
-                    title: title.clone(),
+                    hwnd: w.hwnd.0 as u64,
+                    pid: w.pid,
+                    title: w.title.clone(),
                     profile: m.profile.clone(),
                 });
             }
@@ -51,36 +52,63 @@ pub fn find_game(matchers: &[ProfileMatcher]) -> Option<GameWindow> {
 /// process running `exe`. Matching on the executable too means e.g. an
 /// Explorer window that happens to have the same title is never picked.
 pub fn find_window(title: &str, exe: &str) -> Option<u64> {
-    let mut windows: Vec<(HWND, u32, String)> = Vec::new();
-    unsafe {
-        let _ = EnumWindows(Some(collect_window), LPARAM(&mut windows as *mut Vec<(HWND, u32, String)> as isize));
-    }
     let me = std::process::id();
-    windows
+    visible_windows()
         .into_iter()
-        .filter(|(_, pid, t)| t == title && *pid != me)
-        .find(|(_, pid, _)| exe_name(*pid).is_some_and(|e| e.eq_ignore_ascii_case(exe)))
-        .map(|(hwnd, _, _)| hwnd.0 as u64)
+        .filter(|w| w.title == title && w.pid != me)
+        .find(|w| exe_name(w.pid).is_some_and(|e| e.eq_ignore_ascii_case(exe)))
+        .map(|w| w.hwnd.0 as u64)
 }
 
+/// A visible, titled top-level window.
+struct TopWindow {
+    hwnd: HWND,
+    pid: u32,
+    title: String,
+}
+
+fn visible_windows() -> Vec<TopWindow> {
+    let mut windows: Vec<TopWindow> = Vec::new();
+    // SAFETY: EnumWindows calls `collect_window` synchronously, on this
+    // thread, before returning, so the pointer to `windows` it passes along
+    // stays valid and unaliased for every call.
+    unsafe {
+        let _ = EnumWindows(Some(collect_window), LPARAM(&mut windows as *mut Vec<TopWindow> as isize));
+    }
+    windows
+}
+
+/// # Safety
+///
+/// `lparam` must point to a `Vec<TopWindow>` that nothing else accesses
+/// during the call (see [`visible_windows`]). A panic here can't unwind into
+/// Windows: since Rust 1.81 it aborts at the `extern "system"` boundary.
 unsafe extern "system" fn collect_window(hwnd: HWND, lparam: LPARAM) -> BOOL {
-    let out = &mut *(lparam.0 as *mut Vec<(HWND, u32, String)>);
-    if !IsWindowVisible(hwnd).as_bool() {
-        return true.into();
+    // SAFETY: guaranteed by the caller, as documented above.
+    let out = unsafe { &mut *(lparam.0 as *mut Vec<TopWindow>) };
+    // SAFETY: `hwnd` comes from EnumWindows; a window that has closed since
+    // just makes these calls fail. `buf` and `pid` outlive the calls.
+    unsafe {
+        if !IsWindowVisible(hwnd).as_bool() {
+            return true.into();
+        }
+        let mut buf = [0u16; 512];
+        let len = GetWindowTextW(hwnd, &mut buf);
+        if len <= 0 {
+            return true.into();
+        }
+        let mut pid = 0u32;
+        GetWindowThreadProcessId(hwnd, Some(&mut pid));
+        out.push(TopWindow { hwnd, pid, title: String::from_utf16_lossy(&buf[..len as usize]) });
     }
-    let mut buf = [0u16; 512];
-    let len = GetWindowTextW(hwnd, &mut buf);
-    if len <= 0 {
-        return true.into();
-    }
-    let mut pid = 0u32;
-    GetWindowThreadProcessId(hwnd, Some(&mut pid));
-    out.push((hwnd, pid, String::from_utf16_lossy(&buf[..len as usize])));
     true.into()
 }
 
 /// File name of the process's executable, e.g. "RuneLite.exe".
 pub fn exe_name(pid: u32) -> Option<String> {
+    // SAFETY: the process handle is checked by `.ok()?` and closed exactly
+    // once; `buf` outlives the call and `len` tells the API its capacity in
+    // UTF-16 units, which the API then sets to the length it wrote.
     unsafe {
         let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
         let mut buf = [0u16; 1024];
@@ -94,12 +122,15 @@ pub fn exe_name(pid: u32) -> Option<String> {
 }
 
 pub fn window_alive(hwnd: u64) -> bool {
+    // SAFETY: IsWindow accepts any value, including stale handles.
     unsafe { IsWindow(Some(HWND(hwnd as *mut _))).as_bool() }
 }
 
 /// Client-area size, or `(0, 0)` while minimised.
 pub fn client_size(hwnd: u64) -> (u32, u32) {
     let hwnd = HWND(hwnd as *mut _);
+    // SAFETY: both calls fail cleanly for a window that has closed, and
+    // `rect` outlives the call that fills it in.
     unsafe {
         if IsIconic(hwnd).as_bool() {
             return (0, 0);

@@ -63,9 +63,12 @@ pub fn webview2_available() -> bool {
     use webview2_com::Microsoft::Web::WebView2::Win32::GetAvailableCoreWebView2BrowserVersionString;
     use windows::core::{PCWSTR, PWSTR};
     let mut version = PWSTR::null();
+    // SAFETY: the API allocates `version` (or leaves it null); it's freed
+    // below with the allocator the API documents, exactly once.
     let found = unsafe { GetAvailableCoreWebView2BrowserVersionString(PCWSTR::null(), &mut version) }.is_ok()
         && !version.is_null();
     if !version.is_null() {
+        // SAFETY: see above.
         unsafe { windows::Win32::System::Com::CoTaskMemFree(Some(version.0 as *const _)) };
     }
     found
@@ -77,6 +80,7 @@ pub fn explain_missing_webview2() {
     use windows::core::w;
     use windows::Win32::UI::Shell::ShellExecuteW;
     use windows::Win32::UI::WindowsAndMessaging::{MessageBoxW, IDYES, MB_ICONWARNING, MB_YESNO, SW_SHOWNORMAL};
+    // SAFETY: plain FFI call; `w!` strings are static and NUL-terminated.
     let answer = unsafe {
         MessageBoxW(
             None,
@@ -87,6 +91,7 @@ pub fn explain_missing_webview2() {
     };
     if answer == IDYES {
         // Microsoft's evergreen bootstrapper (a small installer).
+        // SAFETY: as above.
         unsafe {
             ShellExecuteW(
                 None,
@@ -104,6 +109,8 @@ pub fn explain_missing_webview2() {
 fn show_without_activating(window: &tauri::WebviewWindow) {
     use windows::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_SHOWNOACTIVATE};
     if let Ok(hwnd) = window.hwnd() {
+        // SAFETY: `hwnd` is the live window we're handed; ShowWindow fails
+        // harmlessly if it has gone.
         unsafe {
             let _ = ShowWindow(windows::Win32::Foundation::HWND(hwnd.0), SW_SHOWNOACTIVATE);
         }
@@ -139,6 +146,9 @@ fn screenshot_then_exit(
             use windows::Win32::UI::Shell::SHCreateStreamOnFileEx;
 
             let capture = || -> windows::core::Result<()> {
+                // SAFETY: COM calls on the live webview inside `with_webview`
+                // (its thread); `stream` is kept alive by `keep` until the
+                // capture completes.
                 unsafe {
                     let core = wv.controller().CoreWebView2()?;
                     let stream = SHCreateStreamOnFileEx(
