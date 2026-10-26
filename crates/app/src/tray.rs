@@ -174,7 +174,7 @@ pub fn run(cfg: Config, show_window: bool) -> Result<()> {
     unsafe {
         let _ = KillTimer(None, timer);
     }
-    let _ = icon.set_tooltip(Some("playerstv — saving and shutting down…"));
+    let _ = icon.set_tooltip(Some("playerstv\nSaving and shutting down…"));
     let _ = cmd_tx.send(Command::Shutdown);
     let _ = sup_thread.join();
     drop(icon);
@@ -644,19 +644,19 @@ pub fn format_elapsed(secs: u64) -> String {
     }
 }
 
-/// One-line description of the current state, e.g. "● REC 12:34 — RuneLite session".
+/// One-line description of the current state, e.g. "● REC 12:34 · RuneLite full session".
 pub fn status_line(status: &Status, buffer_seconds: u32) -> String {
     match status {
         Status::Waiting => "Waiting for a game…".into(),
         Status::Recording { game, session_since: Some(t), .. } => {
-            format!("● REC {} — {game} full session", format_elapsed(unix_now().saturating_sub(*t)))
+            format!("● REC {} · {game} full session", format_elapsed(unix_now().saturating_sub(*t)))
         }
         Status::Recording { game, since, session_since: None, .. } => {
             let ready = unix_now().saturating_sub(*since).min(buffer_seconds as u64);
             if ready >= buffer_seconds as u64 {
-                format!("Replay buffer on — {game} (last {buffer_seconds}s ready)")
+                format!("Replay buffer on · {game} (last {buffer_seconds}s ready)")
             } else {
-                format!("Replay buffer on — {game} ({ready}s of {buffer_seconds}s ready)")
+                format!("Replay buffer on · {game} ({ready}s of {buffer_seconds}s ready)")
             }
         }
         Status::Failing { game, .. } => format!("{game}: encoder error (see log)"),
@@ -678,7 +678,7 @@ fn update_labels(items: &Items, cfg: &Config, status: &Status) {
 }
 
 fn tooltip(status: &Status, cfg: &Config) -> String {
-    format!("playerstv — {}", status_line(status, status.buffer_seconds_or(cfg.buffer_seconds)))
+    format!("playerstv\n{}", status_line(status, status.buffer_seconds_or(cfg.buffer_seconds)))
 }
 
 /// A plain coloured dot: grey = idle, green = buffering, red = full session,

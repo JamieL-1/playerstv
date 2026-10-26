@@ -183,7 +183,7 @@ function QuitButton() {
   );
 }
 
-/** Discord's "Careful, you have unsaved changes!" bar. */
+/** Discord-style unsaved changes bar. */
 function UnsavedBar() {
   const { dirty, saving, save, reset } = useSettings();
   return (
@@ -194,12 +194,12 @@ function UnsavedBar() {
       )}
     >
       <div className="pointer-events-auto flex w-full max-w-[700px] items-center gap-3 rounded-lg bg-popover px-4 py-2.5 shadow-xl">
-        <span className="flex-1 font-medium">Careful, you have unsaved changes!</span>
+        <span className="flex-1 font-medium">You have unsaved changes.</span>
         <Button variant="link" className="text-foreground" onClick={reset} disabled={saving}>
           Reset
         </Button>
         <Button className="bg-green-600 text-white hover:bg-green-700" onClick={save} disabled={saving}>
-          {saving ? "Saving…" : "Save Changes"}
+          {saving ? "Saving…" : "Save changes"}
         </Button>
       </div>
     </div>

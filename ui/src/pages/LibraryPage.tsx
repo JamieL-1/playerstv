@@ -431,7 +431,7 @@ function RenameDialog({ rec, onClose }: { rec: Recording | null; onClose: () => 
     <NameDialog
       open={rec !== null}
       title={`Rename ${rec?.kind === "session" ? "session" : "clip"}`}
-      description="The file is renamed too, keeping its date and time at the end."
+      description="This renames the file too, keeping its date and time at the end."
       initial={initial}
       confirm="Rename"
       onClose={onClose}

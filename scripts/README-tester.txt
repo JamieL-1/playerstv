@@ -18,9 +18,9 @@ GETTING STARTED
 Alt+F10   save the last 30 seconds
 Alt+F9    start or stop recording the whole session
 
-Clips appear in the window's library and in Videos\playerstv. Closing the
-window quits playerstv. playerstv updates itself, and you can turn that off
-in settings.
+Clips appear in the window's library and in Videos\playerstv. When you close
+the window, playerstv asks whether to keep running in the tray or quit.
+playerstv updates itself, and you can turn that off in settings.
 
 You need an NVIDIA graphics card and Windows 10 (2004 or newer) or 11.
 

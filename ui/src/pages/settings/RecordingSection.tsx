@@ -13,7 +13,7 @@ export function RecordingSection() {
       <SectionTitle title="Recording" description={`What gets recorded. ${OVERRIDE_NOTE}`} />
       <SettingRow
         label="Replay buffer length"
-        description="How much of the last few minutes is kept, and saved when you clip."
+        description="How much recent gameplay playerstv keeps. A clip saves all of it."
         stacked
       >
         <div className="flex items-center gap-4">

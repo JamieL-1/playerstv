@@ -37,7 +37,7 @@ export function StorageSection() {
   return (
     <>
       <SectionTitle title="Storage" description="Where recordings are saved, and how much space they can use." />
-      <SettingRow label="Output folder" description="Clips and sessions are saved in a folder per game." stacked>
+      <SettingRow label="Output folder" description="playerstv saves clips and sessions in a folder per game." stacked>
         <div className="flex gap-2">
           <Input
             value={draft.output_dir}
@@ -67,7 +67,7 @@ export function StorageSection() {
       </div>
       <SettingRow
         label="Limit how much space recordings can use"
-        description="When saved clips and sessions go over the limit, the oldest are deleted."
+        description="When saved clips and sessions go over the limit, playerstv deletes the oldest."
       >
         <Switch checked={limit !== null} onCheckedChange={(on) => set(on ? (limit ?? 50) : null)} />
       </SettingRow>
@@ -109,12 +109,12 @@ export function StorageSection() {
             />
           </SettingRow>
           <Hint tone="warn">
-            The oldest recordings are deleted permanently. Only files playerstv saved count;{" "}
+            playerstv deletes the oldest recordings permanently. Only files playerstv saved count;{" "}
             {draft.keep_named_recordings ? "name a recording or move it" : "move a recording"} out of the folder to keep
             it forever.
           </Hint>
           {used > limit * 1e9 && (
-            <Hint tone="warn">You're over this limit: saving will delete the oldest recordings now.</Hint>
+            <Hint tone="warn">You're over this limit. Saving will delete the oldest recordings now.</Hint>
           )}
         </>
       )}
