@@ -20,3 +20,13 @@ crossbeam-channel = "0.5"
 lto = "thin"
 codegen-units = 1
 strip = true
+
+# Rules from .claude/skills (unsafe-checker, coding-guidelines). CI's
+# `-D warnings` turns these into errors.
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "warn"
+
+[workspace.lints.clippy]
+undocumented_unsafe_blocks = "warn"
+missing_safety_doc = "warn"
+unwrap_used = "warn"

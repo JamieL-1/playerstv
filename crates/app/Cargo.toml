@@ -30,3 +30,6 @@ winreg = "0.56.0"
 # Check GitHub for new releases and install them (crates/app/src/updater.rs).
 # Release builds get it through playerstv's `bundle-ffmpeg` feature.
 auto-update = []
+
+[lints]
+workspace = true
