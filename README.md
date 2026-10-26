@@ -17,11 +17,24 @@ Supported games are Old School RuneScape (RuneLite), League of Legends
   while recording a session.
 - The window has a library, a player and a frame-exact trim editor.
 
-On an RTX 5080 recording RuneLite at 1900×1030, 60 fps: about 0.5% CPU and
-11% NVENC. playerstv itself uses about 9 MB of memory, and the ffmpeg
-encoder it runs uses about 250 MB more while recording. A 30 s buffer takes
-about 40 MB of disk. [BENCHMARKS.md](BENCHMARKS.md) explains how to measure
-this and compare it with other recorders.
+Recording a 2560×1440, 60 fps game on an RTX 5080 with a 30 s buffer and
+game audio, playerstv used:
+
+| | |
+|---|---|
+| CPU | 0.05 cores (0.3% of 16 threads) |
+| Game frame times | no measurable change |
+| NVENC | 59% |
+| GPU memory | 290 MB |
+| RAM | 650 MB, nearly all of it the ffmpeg encoder |
+| Disk | 4.5 MB/s; a 30 s clip is about 100 MB |
+| Save time | 1.4 s |
+| Idle, no game running | no CPU, 6 MB of RAM |
+
+These are medians over 5 rounds, from the
+[full report](bench/published/2026-10-26-rtx5080-1440p60.md).
+[BENCHMARKS.md](BENCHMARKS.md) explains the method and how to compare
+playerstv with other recorders.
 
 ## Download
 
@@ -151,3 +164,8 @@ Signing needs the `MINISIGN_KEY` secret, which must match `PUBLIC_KEY` in
   recovers it on the next start.
 - `Alt+F10` is also NVIDIA App's Instant Replay hotkey. If both are on, change
   one of them.
+- At 60 fps, clips can miss frames, each replaced by a repeat of the one
+  before. With the desktop otherwise idle, the benchmark lost about a third
+  of a fullscreen game's frames. Audio/video sync also varied between runs
+  (sound up to about 110 ms early). See
+  [BENCHMARKS.md](BENCHMARKS.md#known-issue-dropped-frames).

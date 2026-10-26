@@ -84,6 +84,11 @@ idle. What was found so far:
 - Desktop Duplication (`ddagrab`) saw all 60 frames of a windowed game, but
   only about 43 when the game ran fullscreen.
 
+The first full run ([report](bench/published/2026-10-26-rtx5080-1440p60.md),
+2560×1440 fullscreen) lost 34% of frames. Its audio/video sync also varied
+between runs, with sound 8 to 113 ms early, which may be linked to the same
+capture timing.
+
 Still open: whether Windows shows all 60 frames on screen in that state
 (PresentMon would tell), and which capture method and frame timing
 playerstv should use.
