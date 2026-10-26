@@ -106,7 +106,7 @@ fn boxes(mut data: &[u8]) -> impl Iterator<Item = (&[u8; 4], &[u8])> {
     })
 }
 
-fn child<'a>(data: &'a [u8], kind: &[u8; 4]) -> Option<&'a [u8]> {
+fn child<'data>(data: &'data [u8], kind: &[u8; 4]) -> Option<&'data [u8]> {
     boxes(data).find(|(k, _)| *k == kind).map(|(_, p)| p)
 }
 
@@ -136,11 +136,11 @@ fn seconds((timescale, duration): (u32, u64)) -> Option<f64> {
     (timescale > 0 && duration != u32::MAX as u64 && duration != u64::MAX).then(|| duration as f64 / timescale as f64)
 }
 
-struct Track<'a> {
+struct Track<'data> {
     handler: [u8; 4],
     name: String,
     seconds: Option<f64>,
-    sample_entry: Option<(&'a [u8; 4], &'a [u8])>,
+    sample_entry: Option<(&'data [u8; 4], &'data [u8])>,
     samples: u64,
 }
 
