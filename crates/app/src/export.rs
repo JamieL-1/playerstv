@@ -5,12 +5,18 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use anyhow::{bail, Context, Result};
-use ptv_core::clip;
+use ptv_core::clip::{self, ExportKind};
 use ptv_core::ring::Segment;
 
 use crate::recorder::{bind_to_our_lifetime, CREATE_NO_WINDOW};
 
-pub fn export(ffmpeg: &Path, segments: &[Segment], output: PathBuf, audio_titles: &[String]) -> Result<PathBuf> {
+pub fn export(
+    ffmpeg: &Path,
+    segments: &[Segment],
+    output: PathBuf,
+    audio_titles: &[String],
+    kind: ExportKind,
+) -> Result<PathBuf> {
     if segments.is_empty() {
         bail!("nothing recorded yet");
     }
@@ -23,7 +29,7 @@ pub fn export(ffmpeg: &Path, segments: &[Segment], output: PathBuf, audio_titles
 
     let titles: Vec<&str> = audio_titles.iter().map(String::as_str).collect();
     let result = Command::new(ffmpeg)
-        .args(clip::export_args(&list, &output, &titles))
+        .args(clip::export_args(&list, &output, &titles, kind))
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())

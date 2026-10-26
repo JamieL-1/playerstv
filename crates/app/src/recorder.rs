@@ -16,6 +16,7 @@ use ptv_core::config::{AudioSourceKind, Config};
 use ptv_core::ffmpeg_args::{self, AudioInput, CaptureTarget, RecordSpec};
 
 pub use ptv_common::process::{bind_to_our_lifetime, CREATE_NO_WINDOW};
+use ptv_common::sync::lock;
 
 const STDERR_TAIL: usize = 40;
 
@@ -101,7 +102,7 @@ impl Recorder {
             std::thread::Builder::new().name("ffmpeg-stderr".into()).spawn(move || {
                 for line in BufReader::new(stderr).lines().map_while(Result::ok) {
                     tracing::debug!(target: "ffmpeg", "{line}");
-                    let mut t = tail.lock().unwrap();
+                    let mut t = lock(&tail);
                     if t.len() == STDERR_TAIL {
                         t.pop_front();
                     }
@@ -136,7 +137,7 @@ impl Recorder {
     }
 
     fn stderr_summary(&self) -> String {
-        let t = self.stderr_tail.lock().unwrap();
+        let t = lock(&self.stderr_tail);
         t.iter().rev().take(5).rev().cloned().collect::<Vec<_>>().join(" | ")
     }
 

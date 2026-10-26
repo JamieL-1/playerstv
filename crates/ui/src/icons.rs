@@ -48,10 +48,10 @@ pub async fn game_icons() -> Result<HashMap<String, String>, String> {
 fn resolve_all(games: &[GameProfile]) -> HashMap<String, String> {
     let dir = paths::icons_dir();
     let _ = std::fs::create_dir_all(&dir);
-    let missing = |g: &&GameProfile| !dir.join(format!("{}.png", g.id)).exists();
-    if games.iter().any(|g| missing(&g)) {
-        let running = running_exes();
-        for g in games.iter().filter(missing) {
+    let missing: Vec<&GameProfile> = games.iter().filter(|g| !dir.join(format!("{}.png", g.id)).exists()).collect();
+    if !missing.is_empty() {
+        let running = running_exes(&missing);
+        for g in missing {
             if let Some(exe) = find_exe(g, &running) {
                 let _ = cache_icon(&exe, &dir.join(format!("{}.png", g.id)));
             }
@@ -166,16 +166,24 @@ fn vdf_paths(vdf: &str) -> impl Iterator<Item = String> + '_ {
     })
 }
 
-/// Full paths of every running process's exe (those we may query).
-fn running_exes() -> Vec<PathBuf> {
+/// Full paths of the running processes (those we may query) whose exe one
+/// of `games` uses. The snapshot already names every exe, so only those
+/// processes are opened for their full path, not all few hundred.
+fn running_exes(games: &[&GameProfile]) -> Vec<PathBuf> {
+    let wanted = |exe: &str| games.iter().any(|g| g.exe_names.iter().any(|e| e.eq_ignore_ascii_case(exe)));
     let mut out = Vec::new();
+    // SAFETY: `entry` is a properly sized PROCESSENTRY32W (`dwSize` set as the
+    // API requires) that outlives every call writing to it, and the snapshot
+    // handle is closed exactly once, after its last use.
     unsafe {
         let Ok(snap) = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) else { return out };
         let mut entry = PROCESSENTRY32W { dwSize: size_of::<PROCESSENTRY32W>() as u32, ..Default::default() };
         let mut more = Process32FirstW(snap, &mut entry).is_ok();
         while more {
-            if let Some(p) = process_path(entry.th32ProcessID) {
-                out.push(p);
+            let name = &entry.szExeFile;
+            let name = String::from_utf16_lossy(&name[..name.iter().position(|&c| c == 0).unwrap_or(name.len())]);
+            if wanted(&name) {
+                out.extend(process_path(entry.th32ProcessID));
             }
             more = Process32NextW(snap, &mut entry).is_ok();
         }
@@ -185,6 +193,9 @@ fn running_exes() -> Vec<PathBuf> {
 }
 
 fn process_path(pid: u32) -> Option<PathBuf> {
+    // SAFETY: the process handle is checked by `.ok()?` and closed exactly
+    // once; `buf` outlives the call and `len` tells the API its capacity in
+    // UTF-16 units, which the API then sets to the length it wrote.
     unsafe {
         let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
         let mut buf = [0u16; 1024];
@@ -207,32 +218,41 @@ fn display_name(exe: &Path) -> String {
 }
 
 fn version_string(exe: &Path, field: &str) -> Option<String> {
-    unsafe {
-        let file = HSTRING::from(exe.as_os_str());
-        let size = GetFileVersionInfoSizeW(&file, None);
-        if size == 0 {
-            return None;
-        }
-        let mut data = vec![0u8; size as usize];
-        GetFileVersionInfoW(&file, None, size, data.as_mut_ptr().cast()).ok()?;
-        let query = |sub: &str| -> Option<(*const u8, u32)> {
-            let mut ptr: *mut c_void = std::ptr::null_mut();
-            let mut len = 0u32;
-            VerQueryValueW(data.as_ptr().cast(), &HSTRING::from(sub), &mut ptr, &mut len)
-                .as_bool()
-                .then_some((ptr as *const u8, len))
-                .filter(|(p, l)| !p.is_null() && *l > 0)
-        };
-        // First language/code page pair.
-        let (tr, len) = query(r"\VarFileInfo\Translation")?;
-        if len < 4 {
-            return None;
-        }
-        let (lang, cp) = (*(tr as *const u16), *(tr as *const u16).add(1));
-        let (text, chars) = query(&format!(r"\StringFileInfo\{lang:04x}{cp:04x}\{field}"))?;
-        let wide = std::slice::from_raw_parts(text as *const u16, chars as usize);
-        Some(String::from_utf16_lossy(wide).trim_end_matches('\0').to_owned())
+    let file = HSTRING::from(exe.as_os_str());
+    // SAFETY: `file` is a valid NUL-terminated wide string for the call.
+    let size = unsafe { GetFileVersionInfoSizeW(&file, None) };
+    if size == 0 {
+        return None;
     }
+    // A u32 buffer, not u8: the values read out of it below are u16s, and
+    // the block's structures are DWORD-aligned relative to its start.
+    let mut data = vec![0u32; (size as usize).div_ceil(4)];
+    // SAFETY: `data` holds at least `size` bytes, as the call is told.
+    unsafe { GetFileVersionInfoW(&file, None, size, data.as_mut_ptr().cast()) }.ok()?;
+    let query = |sub: &str| -> Option<(*const u16, u32)> {
+        let mut ptr: *mut c_void = std::ptr::null_mut();
+        let mut len = 0u32;
+        // SAFETY: `data` is the version block GetFileVersionInfoW filled in;
+        // the API only writes `ptr` (into `data`) and `len`.
+        unsafe { VerQueryValueW(data.as_ptr().cast(), &HSTRING::from(sub), &mut ptr, &mut len) }
+            .as_bool()
+            .then_some((ptr as *const u16, len))
+            .filter(|(p, l)| !p.is_null() && *l > 0)
+    };
+    // First language/code page pair: two u16s (`len` is in bytes here).
+    let (tr, len) = query(r"\VarFileInfo\Translation")?;
+    if len < 4 {
+        return None;
+    }
+    // SAFETY: `tr` points at `len` >= 4 bytes inside `data`, which is alive
+    // and u16-aligned (see above).
+    let (lang, cp) = unsafe { (*tr, *tr.add(1)) };
+    // For strings, `chars` counts UTF-16 units, terminator included.
+    let (text, chars) = query(&format!(r"\StringFileInfo\{lang:04x}{cp:04x}\{field}"))?;
+    // SAFETY: `text` points at `chars` u16s inside `data`, which outlives
+    // `wide` and is u16-aligned.
+    let wide = unsafe { std::slice::from_raw_parts(text, chars as usize) };
+    Some(String::from_utf16_lossy(wide).trim_end_matches('\0').to_owned())
 }
 
 fn cache_icon(exe: &Path, png: &Path) -> Result<(), String> {
@@ -251,6 +271,8 @@ fn cache_icon(exe: &Path, png: &Path) -> Result<(), String> {
 
 /// The exe's main icon as top-down RGBA.
 fn exe_icon_rgba(exe: &Path) -> Option<(u32, u32, Vec<u8>)> {
+    // SAFETY: SHDefExtractIconW only writes `icon`, which is checked before
+    // use and destroyed exactly once; `icon_rgba` gets a valid HICON.
     unsafe {
         let mut icon = HICON::default();
         SHDefExtractIconW(&HSTRING::from(exe.as_os_str()), 0, 0, Some(&mut icon), None, ICON_SIZE).ok().ok()?;
@@ -263,6 +285,10 @@ fn exe_icon_rgba(exe: &Path) -> Option<(u32, u32, Vec<u8>)> {
     }
 }
 
+/// # Safety
+///
+/// `icon` must be a valid icon handle. It isn't destroyed here; the
+/// bitmaps GetIconInfo creates from it are.
 unsafe fn icon_rgba(icon: HICON) -> Option<(u32, u32, Vec<u8>)> {
     let mut info = ICONINFO::default();
     GetIconInfo(icon, &mut info).ok()?;
@@ -291,6 +317,10 @@ unsafe fn icon_rgba(icon: HICON) -> Option<(u32, u32, Vec<u8>)> {
     result
 }
 
+/// # Safety
+///
+/// `bitmap` must be invalid (then `None` is returned) or a live bitmap
+/// handle at least `w`×`h` pixels in size.
 unsafe fn bitmap_bgra(bitmap: HBITMAP, w: u32, h: u32) -> Option<Vec<u8>> {
     if bitmap.is_invalid() || w == 0 || h == 0 {
         return None;

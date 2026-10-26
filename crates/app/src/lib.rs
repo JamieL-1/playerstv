@@ -53,18 +53,20 @@ pub fn main(mut args: &[String]) {
 
 fn run_tray(show_window: bool) -> Result<()> {
     let _guard = init_logging(false);
-    // Named mutex: only one tray instance at a time. The handle stays open
-    // (and the mutex held) until the process exits.
-    unsafe {
-        let _mutex = CreateMutexW(None, false, &paths::mutex_name("tray"))?;
-        if GetLastError() == ERROR_ALREADY_EXISTS {
-            // Launching the app again means "show me the app".
-            tracing::info!("already running");
-            if show_window {
-                tray::open_window();
-            }
-            return Ok(());
+    // Named mutex: only one tray instance at a time. The handle is never
+    // closed, so the mutex stays held until the process exits.
+    // SAFETY: plain FFI calls, GetLastError straight after the one it reports on.
+    let already_running = unsafe {
+        CreateMutexW(None, false, &paths::mutex_name("tray"))?;
+        GetLastError() == ERROR_ALREADY_EXISTS
+    };
+    if already_running {
+        // Launching the app again means "show me the app".
+        tracing::info!("already running");
+        if show_window {
+            tray::open_window();
         }
+        return Ok(());
     }
     let cfg = Config::load_or_create(&paths::config_file())?;
     tracing::info!("playerstv {} starting, config {}", env!("CARGO_PKG_VERSION"), paths::config_file().display());
@@ -95,7 +97,9 @@ fn wait_for_exit(pid: u32) {
     use windows::Win32::Foundation::CloseHandle;
     use windows::Win32::System::Threading::{OpenProcess, WaitForSingleObject, PROCESS_SYNCHRONIZE};
     // Already gone if it can't be opened.
+    // SAFETY: plain FFI calls; the handle is waited on, then closed once.
     if let Ok(process) = unsafe { OpenProcess(PROCESS_SYNCHRONIZE, false, pid) } {
+        // SAFETY: as above.
         unsafe {
             // Saving a long session on shutdown can take a while.
             WaitForSingleObject(process, 120_000);
@@ -190,6 +194,7 @@ fn init_logging(to_stderr: bool) -> Option<tracing_appender::non_blocking::Worke
 /// Release builds have no console; reuse the parent's so CLI modes can print.
 fn attach_console() {
     #[cfg(not(debug_assertions))]
+    // SAFETY: plain FFI call; failing (no parent console) is harmless.
     unsafe {
         use windows::Win32::System::Console::{AttachConsole, ATTACH_PARENT_PROCESS};
         let _ = AttachConsole(ATTACH_PARENT_PROCESS);

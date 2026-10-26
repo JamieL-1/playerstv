@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 use chrono::Local;
 use crossbeam_channel::{Receiver, RecvTimeoutError};
 use ptv_capture::detect::{self, GameWindow};
+use ptv_common::sync::lock;
 use ptv_core::clip::{self, ExportKind};
 use ptv_core::config::{Config, VideoConfig};
 use ptv_core::ffmpeg_args::{self, CaptureTarget};
@@ -159,7 +160,7 @@ impl Supervisor {
                         let backoff = [2, 5, 15, 30][(active.failures as usize - 1).min(3)];
                         active.retry_at = Instant::now() + Duration::from_secs(backoff);
                         active.last_error = Some(err);
-                        active.recorder.take().unwrap().stop();
+                        active.recorder.take().expect("checked above").stop();
                     }
                 }
                 if active.recorder.is_none() && Instant::now() >= active.retry_at {
@@ -253,7 +254,7 @@ impl Supervisor {
     fn reload(&mut self, cfg: Config) {
         let policy = StoragePolicy::of(&cfg);
         let storage_changed = {
-            let mut current = self.storage.lock().unwrap_or_else(|e| e.into_inner());
+            let mut current = lock(&self.storage);
             let changed = *current != policy;
             *current = policy;
             changed
@@ -368,7 +369,7 @@ impl Supervisor {
         std::thread::spawn(move || {
             let started = Instant::now();
             let segs = source.resolve();
-            let result = export::export(&ffmpeg, &segs, out, &titles);
+            let result = export::export(&ffmpeg, &segs, out, &titles, kind);
             let still_exporting = in_flight.fetch_sub(1, Ordering::SeqCst) > 1;
             match result {
                 Ok(path) => {
@@ -601,8 +602,8 @@ type SharedStoragePolicy = Arc<std::sync::Mutex<StoragePolicy>>;
 fn enforce_storage_limit(policy: &SharedStoragePolicy, sink: &EventSink) {
     // Saves finishing together could both get here; one pass at a time.
     static RUNNING: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    let _guard = RUNNING.lock().unwrap_or_else(|e| e.into_inner());
-    let policy = policy.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let _guard = lock(&RUNNING);
+    let policy = lock(policy).clone();
     let Some(limit) = policy.limit else { return };
 
     let recs = storage::scan(&policy.output_dir);

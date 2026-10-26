@@ -10,7 +10,7 @@ fn bundle_ffmpeg() {
     if std::env::var_os("CARGO_FEATURE_BUNDLE_FFMPEG").is_none() {
         return;
     }
-    let manifest = std::path::PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").unwrap());
+    let manifest = std::path::PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").expect("set by cargo"));
     let path = manifest.join("..").join("..").join("vendor").join("ffmpeg").join("ffmpeg.exe");
     println!("cargo:rerun-if-changed={}", path.display());
     let bytes = std::fs::read(&path).unwrap_or_else(|e| {

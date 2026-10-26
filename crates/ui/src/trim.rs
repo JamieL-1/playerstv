@@ -6,13 +6,14 @@ use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read};
 use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, ChildStderr, ChildStdout, Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use ptv_common::paths;
 use ptv_common::process::{bind_to_our_lifetime, CREATE_NO_WINDOW};
-use ptv_core::clip::{self, ExportKind};
+use ptv_common::sync::lock;
+use ptv_core::clip::{self, Decode, ExportKind, TrimSpec};
 use ptv_core::config::{Codec, Config};
 use tauri::{AppHandle, Emitter, Manager};
 
@@ -86,10 +87,59 @@ fn start_export(app: &AppHandle, path: &str, start: f64, end: f64, name: Option<
     let id = exports.next_id.fetch_add(1, Ordering::Relaxed);
     let part = output.with_extension(format!("mp4.{id}.part"));
     let titles: Vec<&str> = info.audio_tracks.iter().map(String::as_str).collect();
-    let args = clip::trim_args(&source, start, end, &part, codec, cfg.video.quality, &titles);
+    // Our own 4:2:0 recordings decode on the GPU, with the CPU as a fallback
+    // should NVDEC turn out not to handle them; 4:4:4 ones go straight to it.
+    let decode = if video.playable { Decode::Gpu } else { Decode::Cpu };
+    let spec = TrimSpec {
+        source: &source,
+        start,
+        end,
+        output: &part,
+        codec,
+        quality: cfg.video.quality,
+        audio_titles: &titles,
+        decode,
+    };
+    let args = clip::trim_args(&spec);
+    let fallback = (decode == Decode::Gpu).then(|| clip::trim_args(&TrimSpec { decode: Decode::Cpu, ..spec }));
 
+    let (child, stdout, stderr) = spawn_ffmpeg(&args)?;
+    let child = Arc::new(Mutex::new(child));
+    let cancelled = Arc::new(AtomicBool::new(false));
+    lock(&exports.running).insert(id, Running { child: child.clone(), cancelled: cancelled.clone() });
+
+    let app = app.clone();
+    std::thread::Builder::new()
+        .name(format!("export-{id}"))
+        .spawn(move || {
+            let length = end - start;
+            let mut run = follow(&app, id, length, &child, stdout, stderr);
+            let retry_on_cpu = fallback.filter(|_| !run.succeeded() && !cancelled.load(Ordering::SeqCst));
+            if let Some(args) = retry_on_cpu {
+                tracing::warn!("GPU-decoded trim failed ({}), retrying on the CPU", run.errors.trim());
+                run = match spawn_ffmpeg(&args) {
+                    Ok((retry, stdout, stderr)) => {
+                        *lock(&child) = retry;
+                        // Cancelled while the retry was starting: stop it.
+                        if cancelled.load(Ordering::SeqCst) {
+                            let _ = lock(&child).kill();
+                        }
+                        follow(&app, id, length, &child, stdout, stderr)
+                    }
+                    Err(errors) => Run { status: None, errors },
+                };
+            }
+            lock(&app.state::<Exports>().running).remove(&id);
+            let done = finish(id, &part, &output, run.status, &run.errors, cancelled.load(Ordering::SeqCst));
+            let _ = app.emit("export-done", done);
+        })
+        .expect("spawn export thread");
+    Ok(id)
+}
+
+fn spawn_ffmpeg(args: &[String]) -> Result<(Child, ChildStdout, ChildStderr), String> {
     let mut child = Command::new(paths::ffmpeg_exe())
-        .args(&args)
+        .args(args)
         .creation_flags(CREATE_NO_WINDOW)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -97,35 +147,46 @@ fn start_export(app: &AppHandle, path: &str, start: f64, end: f64, name: Option<
         .spawn()
         .map_err(|e| format!("couldn't start ffmpeg: {e}"))?;
     bind_to_our_lifetime(&child);
-    let stdout = child.stdout.take().expect("piped stdout");
-    let stderr = child.stderr.take().expect("piped stderr");
-    let child = Arc::new(Mutex::new(child));
-    let cancelled = Arc::new(AtomicBool::new(false));
-    exports.running.lock().unwrap().insert(id, Running { child: child.clone(), cancelled: cancelled.clone() });
+    let stdout = child.stdout.take().expect("stdout is piped");
+    let stderr = child.stderr.take().expect("stderr is piped");
+    Ok((child, stdout, stderr))
+}
 
-    let app = app.clone();
-    std::thread::Builder::new()
-        .name(format!("export-{id}"))
-        .spawn(move || {
-            let errors = std::thread::spawn(move || {
-                let mut s = String::new();
-                let _ = BufReader::new(stderr).read_to_string(&mut s);
-                s
-            });
-            let length = end - start;
-            for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-                if let Some(fraction) = parse_progress(&line, length) {
-                    let _ = app.emit("export-progress", Progress { id, fraction });
-                }
-            }
-            let status = child.lock().unwrap().wait();
-            let errors = errors.join().unwrap_or_default();
-            app.state::<Exports>().running.lock().unwrap().remove(&id);
-            let done = finish(id, &part, &output, status.ok(), &errors, cancelled.load(Ordering::SeqCst));
-            let _ = app.emit("export-done", done);
-        })
-        .expect("spawn export thread");
-    Ok(id)
+/// How one ffmpeg run ended.
+struct Run {
+    status: Option<ExitStatus>,
+    /// What it printed to stderr.
+    errors: String,
+}
+
+impl Run {
+    fn succeeded(&self) -> bool {
+        self.status.is_some_and(|s| s.success())
+    }
+}
+
+/// Follows one ffmpeg run to its end, emitting its progress.
+fn follow(
+    app: &AppHandle,
+    id: u64,
+    length_s: f64,
+    child: &Mutex<Child>,
+    stdout: ChildStdout,
+    stderr: ChildStderr,
+) -> Run {
+    let errors = std::thread::spawn(move || {
+        let mut s = String::new();
+        let _ = BufReader::new(stderr).read_to_string(&mut s);
+        s
+    });
+    for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+        if let Some(fraction) = parse_progress(&line, length_s) {
+            let _ = app.emit("export-progress", Progress { id, fraction });
+        }
+    }
+    // stdout has closed, so ffmpeg is exiting: this lock isn't held for long.
+    let status = lock(child).wait().ok();
+    Run { status, errors: errors.join().unwrap_or_default() }
 }
 
 /// `out_time_us=5000000` → 0.5 of a 10 s cut.
@@ -166,10 +227,10 @@ fn finish(
 #[tauri::command]
 pub async fn cancel_trim(app: AppHandle, id: u64) {
     let exports = app.state::<Exports>();
-    let running = exports.running.lock().unwrap();
+    let running = lock(&exports.running);
     if let Some(r) = running.get(&id) {
         r.cancelled.store(true, Ordering::SeqCst);
-        let _ = r.child.lock().unwrap().kill();
+        let _ = lock(&r.child).kill();
     }
 }
 

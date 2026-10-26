@@ -15,6 +15,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let secs: u64 = args.next().map(|s| s.parse()).transpose()?.unwrap_or(15);
 
     let dev = DeviceEnumerator::new()?.get_default_device(&Direction::Render)?;
+    // SAFETY: COM calls on interfaces we hold, on this MTA thread.
     let meters: Vec<IAudioMeterInformation> = unsafe {
         let mgr: IAudioSessionManager2 = dev.as_immdevice().Activate(CLSCTX_ALL, None)?;
         let e = mgr.GetSessionEnumerator()?;
@@ -53,6 +54,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
         for m in &meters {
+            // SAFETY: a COM call on an interface we hold, on this MTA thread.
             sec_meter = sec_meter.max(unsafe { m.GetPeakValue().unwrap_or(0.0) });
         }
         if t.elapsed() >= next_report {

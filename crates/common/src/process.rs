@@ -21,6 +21,8 @@ pub fn bind_to_our_lifetime(child: &Child) {
 
     // HANDLE isn't Send/Sync; store the raw value. Never closed on purpose.
     static JOB: OnceLock<Option<usize>> = OnceLock::new();
+    // SAFETY: plain FFI calls; `info` outlives SetInformationJobObject and
+    // its size is passed with it.
     let job = JOB.get_or_init(|| unsafe {
         let job = CreateJobObjectW(None, None).ok()?;
         let mut info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
@@ -36,6 +38,8 @@ pub fn bind_to_our_lifetime(child: &Child) {
     });
     if let Some(job) = job {
         let process = HANDLE(child.as_raw_handle());
+        // SAFETY: the job handle is never closed, and `child` keeps its
+        // process handle open for the duration of the call.
         if let Err(e) = unsafe { AssignProcessToJobObject(HANDLE(*job as *mut _), process) } {
             tracing::warn!("couldn't bind child process to our lifetime: {e}");
         }

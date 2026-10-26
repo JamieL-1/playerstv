@@ -109,7 +109,14 @@ pub fn concat_list(segments: &[Segment]) -> String {
 
 /// ffmpeg arguments that stream-copy the concat list into `output`.
 /// `audio_titles` names the audio tracks in order (e.g. ["Game", "Mic"]).
-pub fn export_args(list_file: &Path, output: &Path, audio_titles: &[&str]) -> Vec<String> {
+///
+/// Clips get `+faststart` (index first), so they start playing straight
+/// away when uploaded somewhere. Sessions don't: moving the index means
+/// ffmpeg reads and rewrites the whole file a second time (measured: 2×
+/// the bytes written). That's hidden by the file cache for small files but
+/// not for a multi-GB session on a slower disk. The app's player and probe
+/// handle the index at either end.
+pub fn export_args(list_file: &Path, output: &Path, audio_titles: &[&str], kind: ExportKind) -> Vec<String> {
     let mut args: Vec<String> = ["-hide_banner", "-nostdin", "-loglevel", "error", "-y", "-f", "concat", "-safe", "0"]
         .map(String::from)
         .to_vec();
@@ -124,30 +131,58 @@ pub fn export_args(list_file: &Path, output: &Path, audio_titles: &[&str]) -> Ve
             args.push(format!("{key}={title}"));
         }
     }
-    args.extend(["-movflags", "+faststart"].map(String::from));
+    if kind == ExportKind::Clip {
+        args.extend(["-movflags", "+faststart"].map(String::from));
+    }
     args.push(output.to_string_lossy().into_owned());
     args
 }
 
+/// Where a trim decodes its source.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Decode {
+    /// NVDEC: frames stay on the GPU from decoder to encoder, like recording.
+    Gpu,
+    /// Software decoding, for sources NVDEC can't read (old 4:4:4
+    /// recordings, or a codec this GPU's NVDEC lacks).
+    Cpu,
+}
+
 /// A cut from `start` to `end` seconds of `source`, frame-exact: re-encoded
 /// on the GPU with `codec` at `quality`, every audio track stream-copied.
-/// The output is 4:2:0 even from old 4:4:4 recordings, so it plays in the
-/// app. Progress goes to stdout as `-progress` key=value lines.
-pub fn trim_args(
-    source: &Path,
-    start: f64,
-    end: f64,
-    output: &Path,
-    codec: Codec,
-    quality: Quality,
-    audio_titles: &[&str],
-) -> Vec<String> {
+#[derive(Debug, Clone)]
+pub struct TrimSpec<'a> {
+    pub source: &'a Path,
+    pub start: f64,
+    pub end: f64,
+    pub output: &'a Path,
+    pub codec: Codec,
+    pub quality: Quality,
+    pub audio_titles: &'a [&'a str],
+    pub decode: Decode,
+}
+
+/// ffmpeg arguments for a [`TrimSpec`]. The output is 8-bit 4:2:0 even from
+/// old 4:4:4 recordings, so it plays in the app. Progress goes to stdout as
+/// `-progress` key=value lines.
+pub fn trim_args(spec: &TrimSpec) -> Vec<String> {
+    let TrimSpec { source, start, end, output, codec, quality, audio_titles, decode } = *spec;
     let mut args: Vec<String> = ["-hide_banner", "-nostdin", "-loglevel", "error", "-y"].map(String::from).to_vec();
+    if decode == Decode::Gpu {
+        args.extend(["-hwaccel", "cuda", "-hwaccel_output_format", "cuda"].map(String::from));
+    }
     // As input options, -ss/-to seek exactly: ffmpeg decodes from the
     // keyframe before `start` and drops frames until it.
     args.extend(["-ss".into(), format!("{start:.6}"), "-to".into(), format!("{end:.6}"), "-i".into()]);
     args.push(source.to_string_lossy().into_owned());
     args.extend(["-map", "0:v:0", "-map", "0:a?", "-map_metadata", "0"].map(String::from));
+    // On the GPU, scale_cuda converts in place (a no-op for our own 8-bit
+    // 4:2:0 recordings); a CPU-decoded frame is converted before upload.
+    let pixel_format: [&str; 2] = match decode {
+        Decode::Gpu => ["-vf", "scale_cuda=format=nv12"],
+        Decode::Cpu => ["-pix_fmt", "yuv420p"],
+    };
+    args.extend(pixel_format.map(String::from));
     let cq = quality.cq(codec).to_string();
     args.extend(
         [
@@ -175,8 +210,6 @@ pub fn trim_args(
             "qres",
             "-rc-lookahead",
             "16",
-            "-pix_fmt",
-            "yuv420p",
             "-c:a",
             "copy",
         ]
@@ -288,7 +321,7 @@ mod tests {
 
     #[test]
     fn export_args_titles_tracks() {
-        let a = export_args(Path::new("list.txt"), Path::new("out.mp4"), &["Game", "Mic"]);
+        let a = export_args(Path::new("list.txt"), Path::new("out.mp4"), &["Game", "Mic"], ExportKind::Clip);
         let s = a.join(" ");
         assert!(s.contains("-f concat -safe 0 -i list.txt -map 0 -c copy"));
         assert!(s.contains("-metadata:s:a:0 title=Game -metadata:s:a:0 handler_name=Game"));
@@ -297,23 +330,43 @@ mod tests {
     }
 
     #[test]
+    fn sessions_skip_the_faststart_rewrite() {
+        let s = export_args(Path::new("list.txt"), Path::new("out.mp4"), &[], ExportKind::Session).join(" ");
+        assert!(!s.contains("faststart"), "{s}");
+        assert!(s.ends_with("-c copy out.mp4"));
+    }
+
+    fn trim(codec: Codec, audio_titles: &'static [&'static str], decode: Decode) -> String {
+        let spec = TrimSpec {
+            source: Path::new("in.mp4"),
+            start: 10.0,
+            end: 15.25,
+            output: Path::new("out.part"),
+            codec,
+            quality: Quality::High,
+            audio_titles,
+            decode,
+        };
+        trim_args(&spec).join(" ")
+    }
+
+    #[test]
     fn trim_args_cut_exactly_on_the_gpu() {
-        let a = trim_args(
-            Path::new("in.mp4"),
-            10.0,
-            15.25,
-            Path::new("out.part"),
-            Codec::Av1,
-            Quality::High,
-            &["Mixed", "Mic"],
-        );
-        let s = a.join(" ");
-        assert!(s.contains("-ss 10.000000 -to 15.250000 -i in.mp4 -map 0:v:0 -map 0:a? -map_metadata 0"));
+        let s = trim(Codec::Av1, &["Mixed", "Mic"], Decode::Gpu);
+        assert!(s.contains("-hwaccel cuda -hwaccel_output_format cuda -ss 10.000000 -to 15.250000 -i in.mp4"));
+        assert!(s.contains("-map 0:v:0 -map 0:a? -map_metadata 0 -vf scale_cuda=format=nv12 -c:v av1_nvenc"));
         assert!(s.contains("-c:v av1_nvenc -preset p5 -tune hq -rc vbr -cq 32 -b:v 0"));
-        assert!(s.contains("-pix_fmt yuv420p -c:a copy"));
+        assert!(!s.contains("-pix_fmt"), "a CPU pixel format can't apply to GPU frames");
         assert!(s.contains("-metadata:s:a:1 title=Mic -metadata:s:a:1 handler_name=Mic"));
         assert!(s.ends_with("-movflags +faststart -f mp4 -progress pipe:1 -nostats out.part"));
-        let h264 = trim_args(Path::new("a"), 0.0, 1.0, Path::new("b"), Codec::H264, Quality::High, &[]).join(" ");
+        let h264 = trim(Codec::H264, &[], Decode::Gpu);
         assert!(h264.contains("-c:v h264_nvenc") && h264.contains("-cq 22") && !h264.contains("-metadata:s:a"));
+    }
+
+    #[test]
+    fn trim_args_can_decode_on_the_cpu() {
+        let s = trim(Codec::Hevc, &[], Decode::Cpu);
+        assert!(!s.contains("hwaccel") && !s.contains("scale_cuda"), "{s}");
+        assert!(s.contains("-map_metadata 0 -pix_fmt yuv420p -c:v hevc_nvenc"));
     }
 }

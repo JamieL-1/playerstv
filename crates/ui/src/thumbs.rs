@@ -6,12 +6,13 @@ use std::collections::HashSet;
 use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::mpsc::{Receiver, Sender};
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
+use crossbeam_channel::{Receiver, Sender};
 use ptv_common::paths;
 use ptv_common::process::{bind_to_our_lifetime, CREATE_NO_WINDOW};
+use ptv_common::sync::lock;
 use tauri::{AppHandle, Emitter};
 
 use crate::library::Recording;
@@ -41,8 +42,7 @@ pub struct Thumbs {
 
 impl Thumbs {
     pub fn start(app: AppHandle) -> Self {
-        let (tx, rx) = std::sync::mpsc::channel::<Job>();
-        let rx = Arc::new(Mutex::new(rx));
+        let (tx, rx) = crossbeam_channel::unbounded::<Job>();
         for i in 0..WORKERS {
             let (rx, app) = (rx.clone(), app.clone());
             std::thread::Builder::new()
@@ -57,7 +57,7 @@ impl Thumbs {
     /// order, so newest first) and deletes thumbnails of files that are gone.
     pub fn attach(&self, recs: &mut [Recording]) {
         let mut keep = HashSet::new();
-        let mut tried = self.tried.lock().unwrap();
+        let mut tried = lock(&self.tried);
         for r in recs.iter_mut() {
             // Still being written (or unreadable): nothing to show yet.
             let Some(info) = &r.info else { continue };
@@ -104,9 +104,8 @@ fn prune(dir: &Path, keep: &HashSet<PathBuf>) {
     }
 }
 
-fn work(rx: &Mutex<Receiver<Job>>, app: &AppHandle) {
-    loop {
-        let Ok(job) = rx.lock().unwrap().recv() else { return };
+fn work(rx: &Receiver<Job>, app: &AppHandle) {
+    for job in rx {
         match make(&job) {
             Ok(()) => {
                 let ready = Ready { path: job.source, thumb: job.thumb.display().to_string() };
@@ -155,8 +154,13 @@ fn make(job: &Job) -> Result<(), String> {
 
 fn args(source: &str, at_s: f64, out: &Path) -> Vec<String> {
     let mut a: Vec<String> = ["-hide_banner", "-nostdin", "-loglevel", "error", "-y"].map(String::from).to_vec();
-    // Before -i: a fast keyframe seek, which is plenty for a thumbnail.
-    a.extend(["-ss".into(), format!("{at_s:.3}"), "-i".into(), source.to_owned()]);
+    // Any frame near `at_s` makes a fine thumbnail, so only keyframes are
+    // decoded and the one at or before `at_s` is used as it is: a fraction
+    // of the work of decoding up to it. NVDEC does the decoding when it can
+    // (FFmpeg's software AV1 decoder can't read 4K120 AV1 at all) and frames
+    // come back to the CPU for scaling; without CUDA it decodes in software.
+    a.extend(["-hwaccel", "cuda", "-skip_frame", "nokey", "-noaccurate_seek", "-ss"].map(String::from));
+    a.extend([format!("{at_s:.3}"), "-i".into(), source.to_owned()]);
     a.extend(["-frames:v", "1", "-vf", "scale=480:-2", "-q:v", "4", "-f", "mjpeg"].map(String::from));
     a.push(out.display().to_string());
     a
@@ -195,7 +199,8 @@ mod tests {
     #[test]
     fn seeks_before_input() {
         let a = args(r"C:\v\a.mp4", 1.25, Path::new(r"C:\t\k.part")).join(" ");
-        assert!(a.contains(r"-ss 1.250 -i C:\v\a.mp4 -frames:v 1 -vf scale=480:-2"), "{a}");
+        assert!(a.contains("-hwaccel cuda -skip_frame nokey -noaccurate_seek"), "{a}");
+        assert!(a.contains(r"-noaccurate_seek -ss 1.250 -i C:\v\a.mp4 -frames:v 1 -vf scale=480:-2"), "{a}");
         assert!(a.ends_with(r"-f mjpeg C:\t\k.part"));
     }
 }
