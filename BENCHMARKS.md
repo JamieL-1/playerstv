@@ -114,8 +114,18 @@ playerstv should use.
   monitor, so it could catch other windows and notifications. playerstv
   only ever records the game window, so it isn't used.
 
-Still open: whether Windows itself drops those frames or ffmpeg's
-`gfxcapture` does (it keeps only two frame buffers).
+- It's Windows, not ffmpeg. `ptv-wgc-probe` captures the game window with
+  Windows Graphics Capture directly, without ffmpeg, and reads every
+  frame's index. It kept 68 to 71% of frames whether the frame pool held 2
+  buffers or 8, and 61% with a 1 ms minimum update interval, against 74 to
+  76% for ffmpeg's `gfxcapture`. Every frame it got was a new one: Windows
+  never delivers the rest. The same held with the game in a window.
+- The test game is now a windowed (GUI) program like a real game. As a
+  console program with a console window of its own it was captured at
+  about 90%, which no player would see.
+
+So without injecting into the game, recording only its window keeps about
+three in four frames of a 60 fps game on this machine.
 
 The A/V offset came from the two streams starting their clocks at different
 moments: video at the first captured frame, audio when its feeder finished
