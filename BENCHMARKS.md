@@ -124,8 +124,23 @@ playerstv should use.
   console program with a console window of its own it was captured at
   about 90%, which no player would see.
 
-So without injecting into the game, recording only its window keeps about
-three in four frames of a 60 fps game on this machine.
+- How many frames Windows Graphics Capture delivers depends on what else
+  is on the desktop. The probe kept ~73% with the game alone and ~85% with
+  a Notepad window open behind it. In the harness, playerstv kept 97 to 98%
+  (three runs), for reasons not yet pinned down.
+
+Against OBS 32.1.2 under the same harness (one 30 s run each, NVENC H.264
+p5 VBR 27 Mbps, so indicative only):
+
+| Recorder | Frames kept |
+|---|---|
+| OBS Game Capture (injects a hook into the game) | 100% |
+| playerstv (window capture, variable frame rate) | 97 to 98% |
+| OBS Window Capture (same Windows API as playerstv), OBS window open | 76% and 90% |
+| OBS Window Capture, OBS minimised to the tray | 60% |
+
+OBS writes a constant 60 fps, so each frame its Window Capture missed is a
+repeat in the clip.
 
 The A/V offset came from the two streams starting their clocks at different
 moments: video at the first captured frame, audio when its feeder finished
