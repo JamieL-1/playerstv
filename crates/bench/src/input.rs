@@ -31,21 +31,30 @@ pub fn parse(hotkey: &str) -> Result<Vec<u16>> {
     Ok(keys)
 }
 
-/// Presses the keys in order and releases them in reverse.
+/// How long the keys stay down, about as long as a person holds them.
+/// Pressing and releasing at once worked for playerstv, which registers its
+/// hotkey with Windows, but OBS polls which keys are down and missed it.
+const HOLD: std::time::Duration = std::time::Duration::from_millis(100);
+
+/// Presses the keys in order, holds them for [`HOLD`], and releases them in
+/// reverse.
 pub fn press(hotkey: &str) -> Result<()> {
     let keys = parse(hotkey)?;
     let event = |vk: u16, flags: KEYBD_EVENT_FLAGS| INPUT {
         r#type: INPUT_KEYBOARD,
         Anonymous: INPUT_0 { ki: KEYBDINPUT { wVk: VIRTUAL_KEY(vk), dwFlags: flags, ..Default::default() } },
     };
-    let inputs: Vec<INPUT> = keys
-        .iter()
-        .map(|&vk| event(vk, KEYBD_EVENT_FLAGS(0)))
-        .chain(keys.iter().rev().map(|&vk| event(vk, KEYEVENTF_KEYUP)))
-        .collect();
+    let down: Vec<INPUT> = keys.iter().map(|&vk| event(vk, KEYBD_EVENT_FLAGS(0))).collect();
+    let up: Vec<INPUT> = keys.iter().rev().map(|&vk| event(vk, KEYEVENTF_KEYUP)).collect();
+    send(&down, hotkey)?;
+    std::thread::sleep(HOLD);
+    send(&up, hotkey)
+}
+
+fn send(inputs: &[INPUT], hotkey: &str) -> Result<()> {
     // SAFETY: `inputs` is a slice of fully initialised keyboard INPUTs and
     // the size passed is the size of one INPUT, as SendInput requires.
-    let sent = unsafe { SendInput(&inputs, size_of::<INPUT>() as i32) };
+    let sent = unsafe { SendInput(inputs, size_of::<INPUT>() as i32) };
     if sent as usize != inputs.len() {
         bail!("SendInput sent {sent} of {} key events for {hotkey}", inputs.len());
     }

@@ -58,6 +58,15 @@ struct Args {
     /// Run the game in a window of this size instead of borderless.
     #[arg(long)]
     windowed: Option<String>,
+    /// Seconds to wait after the game starts before capturing.
+    #[arg(long, default_value_t = 2)]
+    delay: u64,
+    /// Extra gfxcapture options for `--ffmpeg`, e.g. `scale_mode=bicubic`.
+    #[arg(long, default_value = "")]
+    gfx_opts: String,
+    /// Encoder arguments for `--ffmpeg`, replacing the fast default.
+    #[arg(long, default_value = "-c:v h264_nvenc -preset p1 -cq 19", allow_hyphen_values = true)]
+    encode: String,
 }
 
 fn main() -> Result<()> {
@@ -71,7 +80,7 @@ fn main() -> Result<()> {
     let me = std::env::current_exe()?;
     let game_exe = me.with_file_name("ptv-bench-game.exe");
     let mut game = Command::new(&game_exe);
-    game.args(["--fps", &args.fps.to_string(), "--seconds", &(args.seconds + 8).to_string(), "--log"])
+    game.args(["--fps", &args.fps.to_string(), "--seconds", &(args.delay + args.seconds + 6).to_string(), "--log"])
         .arg(&log_path)
         .creation_flags(CREATE_NO_WINDOW);
     if let Some(size) = &args.windowed {
@@ -79,7 +88,7 @@ fn main() -> Result<()> {
     }
     let mut game = game.spawn().with_context(|| format!("starting {}", game_exe.display()))?;
     window::focus_game(Duration::from_secs(10))?;
-    std::thread::sleep(Duration::from_secs(2));
+    std::thread::sleep(Duration::from_secs(args.delay));
 
     let captured = if args.ffmpeg { None } else { Some(capture(&args)?) };
     let clip = dir.join("clip.mp4");
@@ -279,9 +288,15 @@ fn run_ffmpeg(args: &Args, clip: &Path) -> Result<()> {
     let hwnd = unsafe { FindWindowW(windows::core::w!("ptv-bench-game"), None) }.context("no game window")?;
     let status = Command::new(ffmpeg_exe())
         .args(["-hide_banner", "-nostats", "-loglevel", "error", "-y", "-filter_complex"])
-        .arg(format!("gfxcapture=hwnd={}:max_framerate={}:capture_cursor=0[v]", hwnd.0 as usize, args.fps * 2))
+        .arg(format!(
+            "gfxcapture=hwnd={}:max_framerate={}{}{}[v]",
+            hwnd.0 as usize,
+            args.fps * 2,
+            if args.gfx_opts.is_empty() { "" } else { ":" },
+            args.gfx_opts
+        ))
         .args(["-map", "[v]", "-t", &args.seconds.to_string(), "-fps_mode", "vfr", "-enc_time_base", "1/90000"])
-        .args(["-c:v", "h264_nvenc", "-preset", "p1", "-cq", "19"])
+        .args(args.encode.split_whitespace())
         .arg(clip)
         .creation_flags(CREATE_NO_WINDOW)
         .status()?;
