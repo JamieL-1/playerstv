@@ -152,20 +152,22 @@ fn run(source: AudioSource, server: &PipeServer, stop: &AtomicBool, origin: Inst
     let mut packet = Vec::new();
     let silence = vec![0u8; BYTES_PER_FRAME * MAX_AHEAD_FRAMES as usize];
     let mut stats = Stats::default();
+    let pad_to = |written: &mut u64, upto: u64, stats: &mut Stats| -> Result<()> {
+        while *written < upto {
+            let n = (upto - *written).min(MAX_AHEAD_FRAMES) as usize;
+            server.write_all(&silence[..n * BYTES_PER_FRAME])?;
+            *written += n as u64;
+            stats.padded += n as u64;
+        }
+        Ok(())
+    };
+
+    // Silence for the time before the stream opened, so the first captured
+    // packets land at the time they were captured, not at the origin.
+    pad_to(&mut written, clock_frames(origin), &mut stats)?;
 
     while !stop.load(Ordering::Relaxed) {
         stats.maybe_log(&source);
-        // Fill gaps so the timeline never stalls. Done before reading, so
-        // the first packets land at the time they were captured, not at the
-        // origin.
-        let expected = clock_frames(origin);
-        while written + MAX_BEHIND_FRAMES < expected {
-            let n = (expected - written).min(MAX_AHEAD_FRAMES) as usize;
-            server.write_all(&silence[..n * BYTES_PER_FRAME])?;
-            written += n as u64;
-            stats.padded += n as u64;
-        }
-
         match &stream {
             Some(s) => {
                 // Times out every 10 ms when there is nothing to read; that's our tick.
@@ -196,6 +198,14 @@ fn run(source: AudioSource, server: &PipeServer, stop: &AtomicBool, origin: Inst
                 }
             }
             None => std::thread::sleep(Duration::from_millis(10)),
+        }
+
+        // Fill gaps so the timeline never stalls. Only after reading: sound
+        // already queued in WASAPI covers a pause in this thread, and padding
+        // first would push it late.
+        let expected = clock_frames(origin);
+        if written + MAX_BEHIND_FRAMES < expected {
+            pad_to(&mut written, expected, &mut stats)?;
         }
     }
     Ok(())

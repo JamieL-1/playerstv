@@ -254,9 +254,15 @@ fn measure(o: &RunOptions, run_dir: &Path, ptv: Option<&Playerstv>) -> Result<Me
             let hotkey = o.hotkey.as_deref().or(r.hotkey()).context("no save hotkey")?;
             let before = clips::snapshot(&dir);
             let since = Instant::now();
-            input::press(hotkey)?;
+            // Watched for while the keys are still held, so the hold
+            // doesn't set a floor under the save time.
+            let held = input::press(hotkey)?;
             eprintln!("   pressed {hotkey}, waiting for the clip in {}", dir.display());
-            match clips::wait_for_new(&dir, &before, since, Duration::from_secs(120)) {
+            let found = clips::wait_for_new(&dir, &before, since, Duration::from_secs(120));
+            if let Err(e) = held.release() {
+                warnings.push(format!("{e:#}"));
+            }
+            match found {
                 Ok(found) => Some(found),
                 Err(e) => {
                     warnings.push(format!("{e:#}"));
