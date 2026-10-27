@@ -26,6 +26,7 @@ fn ffmpeg_command(c: &mut Criterion) {
         audio_bitrate_kbps: 160,
         segment_dir: &dir,
         start_index: 0,
+        audio_origin_unix_us: 0,
     };
     c.bench_function("ffmpeg_args::record_args", |b| b.iter(|| record_args(&spec)));
 }

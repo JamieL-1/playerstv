@@ -99,6 +99,19 @@ Still open: whether Windows shows all 60 frames on screen in that state
 (PresentMon would tell), and which capture method and frame timing
 playerstv should use.
 
+**Update, not yet re-measured.** The clips from that run show almost every
+lost frame as a repeat followed by a skip: the frame arrived, but late, and
+the fixed 60 fps output gave its slot to a repeat and then dropped it for
+sharing the next slot. So the frames reach ffmpeg, and the loss was in
+playerstv's own timing. playerstv now keeps each frame's capture time
+(variable frame rate), lets Windows deliver up to twice the target rate and
+thins frames out with a filter that tolerates uneven spacing.
+
+The A/V offset came from the two streams starting their clocks at different
+moments: video at the first captured frame, audio when its feeder finished
+opening WASAPI (up to about 100 ms later for one game's sound). Both now
+count from one wall-clock origin picked before ffmpeg starts.
+
 **playerstv is better on a metric** when the 95% interval of the difference
 (playerstv minus the other recorder) lies entirely on the better side of
 zero. If it straddles zero, the report says there's no measurable

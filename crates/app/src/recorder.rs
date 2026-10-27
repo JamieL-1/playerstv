@@ -7,7 +7,7 @@ use std::os::windows::process::CommandExt;
 use std::path::Path;
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
 use ptv_capture::audio::{self, AudioSource, PipeFeeder};
@@ -45,6 +45,10 @@ impl Recorder {
         start_index: u64,
     ) -> Result<Self> {
         let a = &cfg.audio;
+        // Audio counts from here, and ffmpeg is told this time so it puts
+        // video on the same clock.
+        let origin = Instant::now();
+        let origin_unix_us = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_micros() as u64);
         let mut feeders = Vec::new();
         let mut inputs = Vec::new();
         if a.game_audio {
@@ -52,7 +56,7 @@ impl Recorder {
                 AudioSourceKind::Game => AudioSource::Process { pid: window.pid },
                 AudioSourceKind::Desktop => AudioSource::Desktop,
             };
-            let f = PipeFeeder::start(source, audio::pipe_name("game"))?;
+            let f = PipeFeeder::start(source, audio::pipe_name("game"), origin)?;
             inputs.push(AudioInput {
                 pipe_path: f.pipe_path().to_owned(),
                 title: a.source.track_title().into(),
@@ -61,7 +65,8 @@ impl Recorder {
             feeders.push(f);
         }
         if a.mic {
-            let f = PipeFeeder::start(AudioSource::Mic { device: a.mic_device.clone() }, audio::pipe_name("mic"))?;
+            let f =
+                PipeFeeder::start(AudioSource::Mic { device: a.mic_device.clone() }, audio::pipe_name("mic"), origin)?;
             inputs.push(AudioInput {
                 pipe_path: f.pipe_path().to_owned(),
                 title: "Mic".into(),
@@ -81,6 +86,7 @@ impl Recorder {
             audio_bitrate_kbps: a.bitrate_kbps,
             segment_dir,
             start_index,
+            audio_origin_unix_us: origin_unix_us,
         };
         let args = ffmpeg_args::record_args(&spec);
         let audio_titles = ffmpeg_args::track_titles(&spec);
