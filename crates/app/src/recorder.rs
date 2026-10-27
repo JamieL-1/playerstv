@@ -6,6 +6,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::os::windows::process::CommandExt;
 use std::path::Path;
 use std::process::{Child, ChildStdin, Command, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -33,8 +34,8 @@ pub struct Recorder {
     // Dropped after ffmpeg exits so their pipe writes fail cleanly.
     feeders: Vec<PipeFeeder>,
     stderr_tail: Arc<Mutex<VecDeque<String>>>,
-    /// ffmpeg's latest frame count, and when it reported it.
-    progress: Arc<Mutex<Option<(Instant, u64)>>>,
+    /// ffmpeg's latest frame count; 0 until it first reports.
+    frames: Arc<AtomicU64>,
     rate: RateWatch,
     started: Instant,
     /// Titles of the audio tracks, in stream order.
@@ -127,13 +128,13 @@ impl Recorder {
             })?;
         }
 
-        let progress = Arc::new(Mutex::new(None));
+        let frames = Arc::new(AtomicU64::new(0));
         if let Some(stdout) = child.stdout.take() {
-            let progress = progress.clone();
+            let frames = frames.clone();
             std::thread::Builder::new().name("ffmpeg-progress".into()).spawn(move || {
                 for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-                    if let Some(frames) = line.strip_prefix("frame=").and_then(|n| n.trim().parse().ok()) {
-                        *lock(&progress) = Some((Instant::now(), frames));
+                    if let Some(n) = line.strip_prefix("frame=").and_then(|n| n.trim().parse().ok()) {
+                        frames.store(n, Ordering::Relaxed);
                     }
                 }
             })?;
@@ -144,7 +145,7 @@ impl Recorder {
             child,
             feeders,
             stderr_tail,
-            progress,
+            frames,
             rate: RateWatch::default(),
             started: Instant::now(),
             audio_titles,
@@ -174,9 +175,9 @@ impl Recorder {
             self.rate = RateWatch::default();
             return None;
         }
-        if let Some(sample) = *lock(&self.progress) {
-            self.rate.observe(sample);
-        }
+        // Timed now, not when ffmpeg last reported: if it stops reporting,
+        // the rate must fall rather than hold at its last value.
+        self.rate.observe((Instant::now(), self.frames.load(Ordering::Relaxed)));
         self.rate.fps().filter(|&fps| fps < target as f64 * LOW_RATE).map(|fps| fps.round() as u32)
     }
 
@@ -270,5 +271,16 @@ mod tests {
         // Repeated reports of the same sample are ignored.
         r.observe((t0 + Duration::from_secs(60), 1880));
         assert_eq!(r.samples.len(), 16);
+    }
+
+    #[test]
+    fn rate_falls_when_ffmpeg_stops_reporting() {
+        let t0 = Instant::now();
+        let mut r = RateWatch::default();
+        // Healthy for 30 s, then the count stops moving for 30 s.
+        for s in 0..=60 {
+            r.observe((t0 + Duration::from_secs(s), s.min(30) * 60));
+        }
+        assert_eq!(r.fps(), Some(0.0));
     }
 }

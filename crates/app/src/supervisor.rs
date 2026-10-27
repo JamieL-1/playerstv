@@ -28,10 +28,11 @@ const SCAN_INTERVAL: Duration = Duration::from_secs(2);
 const RESIZE_SETTLE: Duration = Duration::from_secs(2);
 const META_FILE: &str = "meta.txt";
 const SESSION_FILE: &str = "session.txt";
-/// A full session shorter than this is dropped, not saved, when the encoder
-/// restarts or recording stops on its own. That footage is a game settling
-/// as it launches (League's window opens square, then resizes), not play.
-const MIN_AUTO_SESSION_SECONDS: u64 = 10;
+/// A full session that ends on its own this soon after the game was found
+/// (the encoder restarting, the game or playerstv closing) is dropped, not
+/// saved. That footage is the game settling as it launches (League's window
+/// opens square, then resizes), not play.
+const LAUNCH_SETTLE: Duration = Duration::from_secs(10);
 
 #[derive(Debug)]
 pub enum Command {
@@ -85,6 +86,8 @@ struct Active {
     pending_resize: Option<((u32, u32), Instant)>,
     /// See [`Recorder::low_fps`].
     low_fps: Option<u32>,
+    /// When the game was found.
+    detected: Instant,
 }
 
 pub struct Supervisor {
@@ -126,7 +129,7 @@ impl Supervisor {
             }
             self.tick();
         }
-        self.stop_game();
+        self.stop_game(Stop::Auto);
         self.wait_for_exports();
     }
 
@@ -151,7 +154,7 @@ impl Supervisor {
             }
             Some(active) if !detect::window_alive(active.window.hwnd) => {
                 tracing::info!("{} closed", active.window.profile.name);
-                self.stop_game();
+                self.stop_game(Stop::Auto);
             }
             Some(_) => {
                 let mut active = self.active.take().expect("matched Some");
@@ -198,7 +201,7 @@ impl Supervisor {
             .session_from
             .is_some_and(|from| ring::scan(&active.dir).unwrap_or_default().iter().any(|s| s.index >= from));
         let continue_session = active.session_from.is_some();
-        if has_session_footage && !session_too_short(active) {
+        if has_session_footage && !just_launched(active) {
             self.finish_session(active, false);
         } else {
             drop_session(active);
@@ -240,6 +243,7 @@ impl Supervisor {
             last_error: None,
             pending_resize: None,
             low_fps: None,
+            detected: Instant::now(),
         };
         start_recorder(&self.ffmpeg, &mut active);
         if active.settings.record_full_session {
@@ -248,13 +252,13 @@ impl Supervisor {
         self.active = Some(active);
     }
 
-    fn stop_game(&mut self) {
+    fn stop_game(&mut self, why: Stop) {
         let Some(mut active) = self.active.take() else { return };
         if let Some(rec) = active.recorder.take() {
             rec.stop();
         }
         let dir = active.dir.clone();
-        if session_too_short(&active) {
+        if why == Stop::Auto && just_launched(&active) {
             drop_session(&mut active);
         }
         if active.session_from.is_some() {
@@ -284,7 +288,7 @@ impl Supervisor {
         if !self.cfg.game_enabled(&active.window.profile.id) {
             tracing::info!("{} capture turned off, stopping", active.window.profile.name);
             self.active = Some(active);
-            self.stop_game(); // saves a full session if one was running
+            self.stop_game(Stop::ByUser); // saves a full session if one was running
             return;
         }
         // Only this game's settings matter: another game's overrides
@@ -598,16 +602,27 @@ fn watch_frame_rate(active: &mut Active) {
     active.low_fps = low;
 }
 
-/// Whether a full session in progress is too short to keep when it ends
-/// on its own: see [`MIN_AUTO_SESSION_SECONDS`].
-fn session_too_short(active: &Active) -> bool {
-    active.session_since.is_some_and(|since| unix_now().saturating_sub(since) < MIN_AUTO_SESSION_SECONDS)
+/// Whether a full session ending on its own now would hold only the game's
+/// launch: see [`LAUNCH_SETTLE`]. Measured from when the game was found, not
+/// when the current file started, so the tail of a long session that just
+/// restarted is kept.
+fn just_launched(active: &Active) -> bool {
+    active.detected.elapsed() < LAUNCH_SETTLE
+}
+
+/// Why recording of a game stops.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Stop {
+    /// The game closed or playerstv is quitting.
+    Auto,
+    /// The player turned capture of this game off: a session always saves.
+    ByUser,
 }
 
 /// Forgets a full session in progress without saving it.
 fn drop_session(active: &mut Active) {
-    if active.session_from.take().is_some() {
-        tracing::info!("dropped a full session shorter than {MIN_AUTO_SESSION_SECONDS} s");
+    if active.session_from.take().is_some() && just_launched(active) {
+        tracing::info!("dropped the full session recorded while {} was launching", active.window.profile.name);
     }
     active.session_since = None;
     let _ = std::fs::remove_file(active.dir.join(SESSION_FILE));
