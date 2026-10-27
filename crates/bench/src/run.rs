@@ -25,6 +25,8 @@ pub struct RunOptions {
     pub warmup: Duration,
     pub measure: Duration,
     pub gpu_load: u32,
+    /// Have the game play its tone (audible), for checking A/V sync.
+    pub tone: bool,
     /// Run the game in a window this size instead of borderless fullscreen.
     pub windowed: Option<(u32, u32)>,
     pub game_exe: PathBuf,
@@ -317,7 +319,7 @@ impl Game {
         if let Some((w, h)) = o.windowed {
             cmd.args(["--windowed", &format!("{w}x{h}")]);
         }
-        if o.settings.audio {
+        if o.tone {
             cmd.arg("--tone");
         }
         let child = cmd.spawn().with_context(|| format!("starting {}", o.game_exe.display()))?;

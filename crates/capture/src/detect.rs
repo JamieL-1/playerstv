@@ -7,7 +7,8 @@ use windows::Win32::System::Threading::{
     OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    EnumWindows, GetClientRect, GetWindowTextW, GetWindowThreadProcessId, IsIconic, IsWindow, IsWindowVisible,
+    EnumWindows, GetClientRect, GetForegroundWindow, GetWindowTextW, GetWindowThreadProcessId, IsIconic, IsWindow,
+    IsWindowVisible,
 };
 
 /// A running game window that matched one of the profiles.
@@ -124,6 +125,12 @@ pub fn exe_name(pid: u32) -> Option<String> {
 pub fn window_alive(hwnd: u64) -> bool {
     // SAFETY: IsWindow accepts any value, including stale handles.
     unsafe { IsWindow(Some(HWND(hwnd as *mut _))).as_bool() }
+}
+
+/// Whether the window is the one the player is using.
+pub fn is_foreground(hwnd: u64) -> bool {
+    // SAFETY: GetForegroundWindow takes no arguments and only reads.
+    unsafe { GetForegroundWindow().0 as u64 == hwnd }
 }
 
 /// Client-area size, or `(0, 0)` while minimised.

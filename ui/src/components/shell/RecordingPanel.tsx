@@ -52,9 +52,24 @@ export function RecordingPanel({ snapshot }: { snapshot: Snapshot | null | undef
     title = "Encoder error";
     subtitle = `${s.game} · retrying`;
   }
+  const lowFps = s.state === "recording" ? s.low_fps : null;
 
   return (
-    <Panel dot={dot} title={title} titleClass={titleClass} subtitle={subtitle}>
+    <Panel
+      dot={dot}
+      title={title}
+      titleClass={titleClass}
+      subtitle={subtitle}
+      warning={
+        lowFps != null
+          ? {
+              text: `Only ${lowFps} fps`,
+              detail:
+                "Over the last 30 seconds, far fewer frames were captured than your frame rate setting. The game may be drawing fewer frames, or capture is falling behind.",
+            }
+          : undefined
+      }
+    >
       <IconButton
         label={`Save last ${snapshot.buffer_seconds}s (${snapshot.clip_hotkey})`}
         disabled={!recording}
@@ -87,15 +102,24 @@ function Panel(props: {
   title: string;
   titleClass?: string;
   subtitle?: string;
+  warning?: { text: string; detail: string };
   children?: React.ReactNode;
 }) {
-  const { dot, title, titleClass, subtitle, children } = props;
+  const { dot, title, titleClass, subtitle, warning, children } = props;
   return (
     <div className="flex items-center gap-2 border-t border-border bg-rail/60 px-2 py-2">
       <span className={cn("ml-1 size-2.5 shrink-0 rounded-full", dot)} />
       <div className="min-w-0 flex-1">
         <div className={cn("truncate text-sm font-semibold", titleClass)}>{title}</div>
         {subtitle && <div className="truncate text-xs text-muted-foreground">{subtitle}</div>}
+        {warning && (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <div className="truncate text-xs text-amber-400">{warning.text}</div>
+            </TooltipTrigger>
+            <TooltipContent className="max-w-64">{warning.detail}</TooltipContent>
+          </Tooltip>
+        )}
       </div>
       <div className="flex shrink-0 gap-0.5">{children}</div>
     </div>

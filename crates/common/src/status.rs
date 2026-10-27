@@ -21,6 +21,11 @@ pub enum Status {
         /// This game's replay buffer length (games can override the global one).
         #[serde(default)]
         buffer_seconds: u32,
+        /// Frames per second actually captured, when that has stayed far
+        /// below the target while the game had focus: the game drawing
+        /// fewer frames, or capture falling behind.
+        #[serde(default)]
+        low_fps: Option<u32>,
     },
     /// Game found but the encoder keeps failing.
     Failing {

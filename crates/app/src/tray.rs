@@ -646,7 +646,7 @@ pub fn format_elapsed(secs: u64) -> String {
 
 /// One-line description of the current state, e.g. "● REC 12:34 · RuneLite full session".
 pub fn status_line(status: &Status, buffer_seconds: u32) -> String {
-    match status {
+    let line = match status {
         Status::Waiting => "Waiting for a game…".into(),
         Status::Recording { game, session_since: Some(t), .. } => {
             format!("● REC {} · {game} full session", format_elapsed(unix_now().saturating_sub(*t)))
@@ -660,6 +660,10 @@ pub fn status_line(status: &Status, buffer_seconds: u32) -> String {
             }
         }
         Status::Failing { game, .. } => format!("{game}: encoder error (see log)"),
+    };
+    match status {
+        Status::Recording { low_fps: Some(fps), .. } => format!("{line} · only {fps} fps"),
+        _ => line,
     }
 }
 

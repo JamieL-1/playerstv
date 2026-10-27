@@ -147,7 +147,21 @@ From Git Bash, set `MSYS_NO_PATHCONV=1` so routes stay as typed.
 
 ### Releasing
 
-Run **Actions → Release** and pick a version bump. The workflow tests, builds,
+First, on a Windows PC with an NVIDIA GPU, run the smoke check on the
+commit you're releasing:
+
+```powershell
+powershell -File scripts/smoke.ps1
+```
+
+It takes about 2 minutes. playerstv records the test game with no audio, with
+game audio, and with game audio and mic mixed, and the check fails if any clip
+drops frames or is missing tracks. CI can't do this: its runners have no GPU
+to capture or encode with. Don't release on a failure, even one that only hits
+a setup the change didn't seem to touch. 0.4.1 went out with mixed audio
+recording at 17 fps because only the no-mic setup was tested.
+
+Then run **Actions → Release** and pick a version bump. The workflow tests, builds,
 packages and signs the release. If every step passes, it pushes the version
 commit and tag and publishes the release. Pull afterwards to get the commit.
 Tick *dry run* to build without publishing.
