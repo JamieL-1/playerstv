@@ -205,6 +205,9 @@ pub fn record_args(spec: &RecordSpec) -> Vec<String> {
     let mut push = |items: &[&str]| a.extend(items.iter().map(|s| s.to_string()));
 
     push(&["-hide_banner", "-nostats", "-loglevel", "warning", "-y"]);
+    // Frame counts on stdout, so the recorder can tell when capture falls
+    // short of the frame rate.
+    push(&["-progress", "pipe:1", "-stats_period", "2"]);
 
     // Point sampling keeps 2× pixel-perfect; bicubic beats the default
     // bilinear for every other rescale.
@@ -221,12 +224,15 @@ pub fn record_args(spec: &RecordSpec) -> Vec<String> {
     graph.push(',');
     graph.push_str(&pace_filter(v.fps));
     graph.push_str("[v]");
+    push(&["-filter_complex", &graph]);
+    // The mix gets a graph of its own. In one graph, ffmpeg only runs the
+    // capture when audio arrives and pulls whichever output is furthest
+    // behind; audio always trails video a little, so capture waited on it
+    // and Windows dropped the frames queued meanwhile (17 fps in League).
     let mix = has_mix(spec);
     if mix {
-        graph.push(';');
-        graph.push_str(&mix_graph(spec.audio));
+        push(&["-filter_complex", &mix_graph(spec.audio)]);
     }
-    push(&["-filter_complex", &graph]);
 
     for input in spec.audio {
         push(&[
@@ -370,8 +376,12 @@ mod tests {
              select='st(0,if(n,min(2,ld(0)+(t-ld(1))*120),1));st(1,t);if(gte(ld(0),0.75),st(0,ld(0)-1)*0+1,0)'[v]"
         ));
         assert!(s.contains(
-            "[v];[0:a]volume=1.50[m0];[1:a]volume=0.80[m1];[m0][m1]amix=inputs=2:normalize=0:dropout_transition=0,alimiter=limit=0.97:level=false[mix]"
+            "[v] -filter_complex [0:a]volume=1.50[m0];[1:a]volume=0.80[m1];[m0][m1]amix=inputs=2:normalize=0:dropout_transition=0,alimiter=limit=0.97:level=false[mix]"
         ));
+        // Capture must never share a graph with an input: ffmpeg would only
+        // run it when that input delivers (17 fps in 0.4.1).
+        let capture_graph = args.iter().find(|a| a.starts_with("gfxcapture")).unwrap();
+        assert!(!capture_graph.contains(":a]") && !capture_graph.contains("];["), "{capture_graph}");
         assert!(s.contains(r"-f f32le -ar 48000 -ac 2 -i \\.\pipe\ptv-game"));
         assert!(s.contains("-map [v] -map [mix] -map 0:a -map 1:a"));
         assert_eq!(track_titles(&spec), ["Mixed", "Game", "Mic"]);

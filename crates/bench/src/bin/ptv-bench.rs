@@ -11,7 +11,7 @@ use ptv_bench::frame_log::FrameLog;
 use ptv_bench::pattern::Pattern;
 use ptv_bench::recorders::{Recorder, Settings};
 use ptv_bench::report;
-use ptv_bench::run::{self, RunOptions};
+use ptv_bench::run::{self, RunOptions, RunResult};
 use ptv_bench::win::window;
 use ptv_core::config::VideoConfig;
 use ptv_core::ffmpeg_args::{self, CaptureTarget};
@@ -54,6 +54,22 @@ enum Cmd {
         recorder: Recorder,
         #[command(flatten)]
         common: Common,
+    },
+    /// A quick check before a release: playerstv records the test game
+    /// briefly with each audio setup it supports, and fails if a clip is
+    /// missing frames or audio tracks. Silent (no tone), but the
+    /// microphone setup records your microphone into the results folder.
+    Smoke {
+        #[arg(long, default_value_t = 60)]
+        fps: u32,
+        /// Seconds to measure in each setup.
+        #[arg(long, default_value_t = 15)]
+        seconds: u64,
+        #[arg(long, value_parser = parse_size)]
+        windowed: Option<(u32, u32)>,
+        /// Results folder. Defaults to bench/results/smoke-<date-time>.
+        #[arg(long)]
+        out: Option<PathBuf>,
     },
     /// Builds report.md and report.json from a results folder.
     Report { dir: PathBuf },
@@ -100,6 +116,10 @@ struct Common {
     /// Play the game's tone and record game audio. Audible.
     #[arg(long)]
     audio: bool,
+    /// Also record the microphone, mixed with the game audio, as playerstv
+    /// does by default.
+    #[arg(long)]
+    mic: bool,
     /// Results folder. Defaults to bench/results/<date-time>.
     #[arg(long)]
     out: Option<PathBuf>,
@@ -167,6 +187,7 @@ fn main() -> Result<()> {
             let result = run::idle(&o)?;
             println!("{}", serde_json::to_string_pretty(&result.metrics)?);
         }
+        Cmd::Smoke { fps, seconds, windowed, out } => smoke(fps, seconds, windowed, out)?,
         Cmd::Report { dir } => write_report(&dir)?,
         Cmd::Analyze { clip, log } => {
             let log = FrameLog::read(&log)?;
@@ -220,6 +241,95 @@ fn suite(recorders: &[Recorder], rounds: u32, idle: bool, common: &Common) -> Re
         bail!("{} runs failed; see {}", failures.len(), out.join("failures.txt").display());
     }
     Ok(())
+}
+
+/// Below this share of the game's frames, a smoke run fails outright.
+/// 0.4.1 with the mic mixed kept 28%.
+const SMOKE_MIN_KEPT: f64 = 0.5;
+/// How far below the video-only run an audio setup may fall. Windows
+/// Graphics Capture alone delivers anywhere from about 70 to 98% depending
+/// on what else is on screen (BENCHMARKS.md), so each setup is compared with
+/// a run made moments before, not with a fixed bar.
+const SMOKE_MAX_BEHIND: f64 = 0.1;
+
+fn smoke(fps: u32, seconds: u64, windowed: Option<(u32, u32)>, out: Option<PathBuf>) -> Result<()> {
+    let out = out.unwrap_or_else(|| {
+        PathBuf::from("bench")
+            .join("results")
+            .join(format!("smoke-{}", chrono::Local::now().format("%Y-%m-%d_%H-%M-%S")))
+    });
+    let environment = ptv_bench::env::collect();
+    // Each graph shape playerstv builds: no audio, an audio input passed
+    // straight through, and inputs mixed in a graph of their own. Video
+    // only comes first: it's what the others are compared with.
+    let setups =
+        [("video only", false, false, 0), ("game audio", true, false, 1), ("game audio + mic, mixed", true, true, 3)];
+    let mut baseline = None;
+    let mut failures = Vec::new();
+    for (round, (name, audio, mic, tracks)) in (1..).zip(setups) {
+        let common = Common {
+            fps,
+            buffer: 10,
+            warmup: 5,
+            seconds,
+            gpu_load: 0,
+            windowed,
+            audio: false,
+            mic: false,
+            out: Some(out.clone()),
+            clips_dir: Vec::new(),
+            hotkey: Vec::new(),
+            yes: true,
+        };
+        let mut o = options(&common, Recorder::Playerstv, round, &out, environment.clone())?;
+        // Recorded, but the game stays silent.
+        o.settings.audio = audio;
+        o.settings.mic = mic;
+        let verdict = run::run(&o).map_err(|e| format!("{e:#}")).and_then(|r| check_smoke(&r, tracks, baseline));
+        match verdict {
+            Ok(kept) => {
+                eprintln!("ok    {name}: kept {:.1}% of frames, {tracks} audio tracks", kept * 100.0);
+                baseline.get_or_insert(kept);
+            }
+            Err(why) => {
+                eprintln!("FAIL  {name}: {why}");
+                failures.push(format!("{name}: {why}"));
+            }
+        }
+    }
+    if !failures.is_empty() {
+        bail!("{} of {} setups failed:\n{}", failures.len(), setups.len(), failures.join("\n"));
+    }
+    eprintln!("all {} setups passed; results in {}", setups.len(), out.display());
+    Ok(())
+}
+
+/// The share of the game's frames the clip kept, if it passes.
+fn check_smoke(r: &RunResult, tracks: usize, baseline: Option<f64>) -> Result<f64, String> {
+    let Some(c) = &r.clip else {
+        return Err(format!("no clip was checked: {}", r.warnings.join("; ")));
+    };
+    let delivered = (c.frames - c.unreadable) as u64 - c.duplicates;
+    let kept = delivered as f64 / (delivered + c.dropped).max(1) as f64;
+    let detail = || {
+        format!(
+            "kept {:.0}% of the game's frames ({} dropped, {} repeated, {} unreadable)",
+            kept * 100.0,
+            c.dropped,
+            c.duplicates,
+            c.unreadable
+        )
+    };
+    if kept < SMOKE_MIN_KEPT {
+        return Err(detail());
+    }
+    if let Some(base) = baseline.filter(|&b| kept < b - SMOKE_MAX_BEHIND) {
+        return Err(format!("{}, against {:.0}% with video only", detail(), base * 100.0));
+    }
+    if c.audio_tracks != tracks {
+        return Err(format!("{} audio tracks, expected {tracks}", c.audio_tracks));
+    }
+    Ok(kept)
 }
 
 /// A fixed shuffle per round, so heat and background activity don't always
@@ -295,10 +405,19 @@ fn options(c: &Common, recorder: Recorder, round: u32, out: &Path, environment: 
     Ok(RunOptions {
         recorder,
         round,
-        settings: Settings { width, height, fps: c.fps, buffer_seconds: c.buffer, bitrate_mbps, audio: c.audio },
+        settings: Settings {
+            width,
+            height,
+            fps: c.fps,
+            buffer_seconds: c.buffer,
+            bitrate_mbps,
+            audio: c.audio,
+            mic: c.mic,
+        },
         warmup: Duration::from_secs(c.warmup),
         measure: Duration::from_secs(c.seconds),
         gpu_load: c.gpu_load,
+        tone: c.audio,
         windowed: c.windowed,
         game_exe: beside_me("ptv-bench-game.exe")?,
         playerstv_exe: if recorder == Recorder::Playerstv { beside_me("playerstv.exe")? } else { PathBuf::new() },

@@ -317,7 +317,12 @@ pub fn markdown(report: &Report) -> String {
             s.height,
             s.fps,
             s.buffer_seconds,
-            if s.audio { "with game audio" } else { "without audio" },
+            match (s.audio, s.mic) {
+                (true, true) => "with game audio and the microphone mixed",
+                (true, false) => "with game audio",
+                (false, true) => "with the microphone",
+                (false, false) => "without audio",
+            },
             r.measure_s,
             r.warmup_s
         );
@@ -442,6 +447,7 @@ mod tests {
                 buffer_seconds: 30,
                 bitrate_mbps: 14,
                 audio: false,
+                mic: false,
             },
             gpu_load: 0,
             warmup_s: 30.0,

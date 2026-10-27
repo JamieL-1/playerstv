@@ -42,8 +42,8 @@ pub fn config(s: &Settings, clips_dir: &Path) -> Config {
     };
     cfg.video.fps = s.fps;
     cfg.audio.game_audio = s.audio;
-    cfg.audio.mic = false;
-    cfg.audio.mixed_track = false;
+    cfg.audio.mic = s.mic;
+    cfg.audio.mixed_track = s.audio && s.mic;
     cfg.games = profile::builtins();
     for g in &mut cfg.games {
         g.enabled = false;
@@ -119,7 +119,15 @@ mod tests {
 
     #[test]
     fn bench_config_records_only_the_test_game() {
-        let s = Settings { width: 2560, height: 1440, fps: 60, buffer_seconds: 30, bitrate_mbps: 27, audio: false };
+        let s = Settings {
+            width: 2560,
+            height: 1440,
+            fps: 60,
+            buffer_seconds: 30,
+            bitrate_mbps: 27,
+            audio: false,
+            mic: false,
+        };
         let cfg = config(&s, Path::new(r"C:\clips"));
         let enabled: Vec<&str> = cfg.games.iter().filter(|g| g.enabled).map(|g| g.name.as_str()).collect();
         assert_eq!(enabled, [GAME_NAME]);

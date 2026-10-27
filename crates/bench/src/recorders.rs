@@ -29,6 +29,10 @@ pub struct Settings {
     pub bitrate_mbps: u32,
     /// Record the game's audio.
     pub audio: bool,
+    /// Also record the microphone, mixed with the game audio as playerstv
+    /// does by default. Results from before this was added lack it.
+    #[serde(default)]
+    pub mic: bool,
 }
 
 impl Recorder {
@@ -99,7 +103,12 @@ impl Recorder {
     /// Steps for setting up a recorder the harness can't configure, so it
     /// records the same thing as the others.
     pub fn checklist(self, s: &Settings) -> Vec<String> {
-        let audio = if s.audio { "Game audio on, microphone off." } else { "All audio off, microphone off." };
+        let audio = match (s.audio, s.mic) {
+            (true, true) => "Game audio and microphone on, mixed into one track.",
+            (true, false) => "Game audio on, microphone off.",
+            (false, true) => "Game audio off, microphone on.",
+            (false, false) => "All audio off, microphone off.",
+        };
         let common = [
             format!("Replay buffer length {} s.", s.buffer_seconds),
             format!("{} fps, {}x{} (no downscaling).", s.fps, s.width, s.height),

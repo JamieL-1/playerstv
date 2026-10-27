@@ -3,6 +3,7 @@
 #   powershell -File scripts/bench.ps1                          # playerstv vs no recorder
 #   powershell -File scripts/bench.ps1 -Recorders playerstv,obs,nvidia -Rounds 5
 #   powershell -File scripts/bench.ps1 -Audio                   # adds audio and A/V sync (audible)
+#   powershell -File scripts/bench.ps1 -Audio -Mic              # also the mic, mixed in, like playerstv's defaults
 #
 # Builds release binaries first: debug builds are meaningless to measure.
 # Switches to the High performance power plan for the run and puts the
@@ -21,6 +22,7 @@ param(
     [int]$GpuLoad = 0,
     [string]$Windowed,
     [switch]$Audio,
+    [switch]$Mic,
     [switch]$Idle,
     [string[]]$ClipsDir = @(),
     [string[]]$Hotkey = @(),
@@ -51,6 +53,7 @@ try {
         "--gpu-load", $GpuLoad, "--recorders", ($Recorders -join ","))
     if ($Windowed) { $benchArgs += @("--windowed", $Windowed) }
     if ($Audio) { $benchArgs += "--audio" }
+    if ($Mic) { $benchArgs += "--mic" }
     if ($Idle) { $benchArgs += "--idle" }
     if ($Out) { $benchArgs += @("--out", $Out) }
     foreach ($c in $ClipsDir) { $benchArgs += @("--clips-dir", $c) }

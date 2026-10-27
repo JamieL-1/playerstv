@@ -28,6 +28,10 @@ const SCAN_INTERVAL: Duration = Duration::from_secs(2);
 const RESIZE_SETTLE: Duration = Duration::from_secs(2);
 const META_FILE: &str = "meta.txt";
 const SESSION_FILE: &str = "session.txt";
+/// A full session shorter than this is dropped, not saved, when the encoder
+/// restarts or recording stops on its own. That footage is a game settling
+/// as it launches (League's window opens square, then resizes), not play.
+const MIN_AUTO_SESSION_SECONDS: u64 = 10;
 
 #[derive(Debug)]
 pub enum Command {
@@ -79,6 +83,8 @@ struct Active {
     /// A window size that differs from the one being encoded, and when it
     /// was first seen.
     pending_resize: Option<((u32, u32), Instant)>,
+    /// See [`Recorder::low_fps`].
+    low_fps: Option<u32>,
 }
 
 pub struct Supervisor {
@@ -170,6 +176,7 @@ impl Supervisor {
                     active.failures = 0;
                     self.restart_recorder(&mut active);
                 }
+                watch_frame_rate(&mut active);
                 if self.exports_in_flight.load(Ordering::SeqCst) == 0 {
                     prune(&active.dir, active.settings.buffer_seconds, active.session_from);
                 }
@@ -180,8 +187,9 @@ impl Supervisor {
     }
 
     /// Starts a fresh encoder for an already-running game. A full session in
-    /// progress is saved and continued in a new file, since the new encoder's
-    /// output may not be concatenable with the old one's.
+    /// progress is saved (unless it's only just started) and continued in a
+    /// new file, since the new encoder's output may not be concatenable with
+    /// the old one's.
     fn restart_recorder(&mut self, active: &mut Active) {
         if let Some(rec) = active.recorder.take() {
             rec.stop();
@@ -190,8 +198,10 @@ impl Supervisor {
             .session_from
             .is_some_and(|from| ring::scan(&active.dir).unwrap_or_default().iter().any(|s| s.index >= from));
         let continue_session = active.session_from.is_some();
-        if has_session_footage {
+        if has_session_footage && !session_too_short(active) {
             self.finish_session(active, false);
+        } else {
+            drop_session(active);
         }
         start_recorder(&self.ffmpeg, active);
         if continue_session {
@@ -229,6 +239,7 @@ impl Supervisor {
             retry_at: Instant::now(),
             last_error: None,
             pending_resize: None,
+            low_fps: None,
         };
         start_recorder(&self.ffmpeg, &mut active);
         if active.settings.record_full_session {
@@ -243,6 +254,9 @@ impl Supervisor {
             rec.stop();
         }
         let dir = active.dir.clone();
+        if session_too_short(&active) {
+            drop_session(&mut active);
+        }
         if active.session_from.is_some() {
             // Exports the session, then deletes the buffer once idle.
             self.finish_session(&mut active, true);
@@ -437,6 +451,7 @@ impl Supervisor {
                     session_since: a.session_since,
                     video: a.recorder.as_ref().map(|r| r.video_summary.clone()).unwrap_or_default(),
                     buffer_seconds: a.settings.buffer_seconds,
+                    low_fps: a.low_fps,
                 },
             },
         }
@@ -564,6 +579,38 @@ fn start_recorder(ffmpeg: &Path, active: &mut Active) {
             active.last_error = Some(format!("{e:#}"));
         }
     }
+}
+
+/// Logs when the captured frame rate drops well below the target, and when
+/// it recovers; the status carries it to the UI.
+fn watch_frame_rate(active: &mut Active) {
+    let target = active.settings.video.fps;
+    let focused = detect::is_foreground(active.window.hwnd);
+    let low = active.recorder.as_mut().and_then(|r| r.low_fps(target, focused));
+    match (active.low_fps, low) {
+        (None, Some(fps)) => tracing::warn!(
+            "{} capturing {fps} of {target} fps over the last 30 s: the game is drawing fewer frames, or capture is falling behind",
+            active.window.profile.name
+        ),
+        (Some(_), None) => tracing::info!("{} capture frame rate recovered", active.window.profile.name),
+        _ => {}
+    }
+    active.low_fps = low;
+}
+
+/// Whether a full session in progress is too short to keep when it ends
+/// on its own: see [`MIN_AUTO_SESSION_SECONDS`].
+fn session_too_short(active: &Active) -> bool {
+    active.session_since.is_some_and(|since| unix_now().saturating_sub(since) < MIN_AUTO_SESSION_SECONDS)
+}
+
+/// Forgets a full session in progress without saving it.
+fn drop_session(active: &mut Active) {
+    if active.session_from.take().is_some() {
+        tracing::info!("dropped a full session shorter than {MIN_AUTO_SESSION_SECONDS} s");
+    }
+    active.session_since = None;
+    let _ = std::fs::remove_file(active.dir.join(SESSION_FILE));
 }
 
 fn begin_session(active: &mut Active) {

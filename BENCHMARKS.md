@@ -147,6 +147,17 @@ moments: video at the first captured frame, audio when its feeder finished
 opening WASAPI (up to about 100 ms later for one game's sound). Both now
 count from one wall-clock origin picked before ffmpeg starts.
 
+That clock change broke recording with game audio and mic mixed (0.4.1).
+The mix was in the same ffmpeg filter graph as the capture. ffmpeg runs such a
+graph only when an input delivers, and pulls whichever output is furthest
+behind. With both streams on one clock, audio always trails video slightly
+while it's processed, so the capture waited on it and Windows dropped the
+frames queued meanwhile: League recorded at 17 fps. Before, video's clock
+started later and always looked behind, which hid the problem. The benchmark
+missed it because it always turned the mic off. The mix now has a graph of
+its own, `--mic` covers that setup, and `scripts/smoke.ps1` checks every
+audio setup before a release.
+
 **playerstv is better on a metric** when the 95% interval of the difference
 (playerstv minus the other recorder) lies entirely on the better side of
 zero. If it straddles zero, the report says there's no measurable
@@ -176,6 +187,18 @@ Results go to `bench/results/<date-time>/`: one JSON file per run, the saved
 clips, and `report.md`. Rebuild a report with
 `target\release\ptv-bench.exe report <folder>`. Reports worth keeping go in
 `bench/published/`.
+
+`--mic` also records the microphone, mixed with game audio, as playerstv does
+by default. Other recorders' checklists then ask for the same.
+
+Before a release, `scripts/smoke.ps1` (`ptv-bench smoke`) records a short run
+in each audio setup playerstv builds a different ffmpeg command for: no audio,
+game audio, and game audio + mic mixed. A setup fails if it keeps fewer than
+half the game's frames, more than 10 points fewer than the video-only run, or
+has the wrong number of audio tracks. It's measured against video only, not a
+fixed bar, because Windows Graphics Capture itself keeps anywhere from about
+70 to 98% depending on the desktop. With 0.4.1's bug put back, the mixed setup
+kept 29% and failed, while the other two kept 72 to 74%.
 
 Other commands:
 

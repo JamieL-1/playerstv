@@ -107,6 +107,8 @@ export type Status =
       session_since: number | null;
       video: string;
       buffer_seconds: number;
+      /** Frames per second actually captured, when well below the target while the game had focus. */
+      low_fps?: number | null;
     }
   | { state: "failing"; game: string; error: string };
 
