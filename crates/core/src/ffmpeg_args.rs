@@ -1,14 +1,15 @@
 //! Builds the long-running capture/encode ffmpeg command.
 //!
-//! Video never leaves the GPU: `gfxcapture` (Windows Graphics Capture) yields
-//! D3D11 textures, scales them itself, and NVENC encodes them directly. Audio
-//! arrives as raw f32 PCM over named pipes fed by the capture crate.
+//! Video never leaves the GPU: the capture source yields D3D11 textures and
+//! NVENC encodes them directly. A game that fills its monitor is captured
+//! with `ddagrab` (Desktop Duplication); anything else with `gfxcapture`
+//! (Windows Graphics Capture), which records just the window and scales it
+//! itself. Audio arrives as raw f32 PCM over named pipes fed by the capture
+//! crate.
 //!
 //! Frames keep the time Windows captured them at (variable frame rate).
-//! Forcing them onto a fixed 1/fps grid used to lose about a third of a
-//! 60 fps game's frames: one that landed a little late left its slot to a
-//! repeat of the previous frame, then shared the next slot with its
-//! successor and was dropped.
+//! Forcing them onto a fixed 1/fps grid made every frame that landed a
+//! little late leave its slot to a repeat of the previous frame.
 
 use std::path::Path;
 
@@ -25,6 +26,23 @@ pub struct CaptureTarget {
     /// Current client-area size, used to keep the aspect ratio when scaling.
     pub width: u32,
     pub height: u32,
+    /// When the client area is exactly a monitor on the default GPU (the
+    /// one ffmpeg and NVENC use), that monitor's DXGI output index there:
+    /// borderless or exclusive fullscreen.
+    pub fullscreen_output: Option<u32>,
+}
+
+/// The Desktop Duplication output to record instead of the window, if any.
+///
+/// For a game filling its monitor, Windows Graphics Capture delivered only
+/// about 73% of a 60 fps game's frames, however it was set up, while
+/// Desktop Duplication delivered all of them. Duplication records the whole
+/// monitor, overlays and all, so it's only used when the game covers it.
+/// It's also only used at the monitor's own size: `scale_d3d11` can't
+/// scale its frames, so other sizes stay with `gfxcapture`, which can.
+pub fn duplicated_output(target: CaptureTarget, video: &VideoConfig) -> Option<u32> {
+    let output = target.fullscreen_output?;
+    (encoded_size(target, video) == (target.width, target.height)).then_some(output)
 }
 
 /// One raw-PCM audio input delivered on a named pipe.
@@ -54,8 +72,8 @@ pub struct RecordSpec<'a> {
 
 pub const MIXED_TRACK_TITLE: &str = "Mixed";
 
-/// Windows Graphics Capture may deliver frames this many times faster than
-/// the target rate, and [`pace_filter`] thins them out. Capping capture at
+/// The capture source may deliver frames this many times faster than the
+/// target rate, and [`pace_filter`] thins them out. Capping capture at
 /// exactly the target rate made Windows skip frames that arrived a little
 /// early, as frames of a 60 fps game shown on a faster monitor often do.
 const CAPTURE_HEADROOM: u32 = 2;
@@ -172,6 +190,11 @@ pub fn encode_plan(target: CaptureTarget, v: &VideoConfig) -> EncodePlan {
     let (width, height) = encoded_size(target, v);
     let pixels = width as u64 * height as u64;
     let heavy = pixels * v.fps as u64 > HEAVY_PIXEL_RATE;
+    // Desktop Duplication merges frames that arrive while the encoder is
+    // busy with the last one, so it needs a fast preset: at 1440p60 it kept
+    // ~75% of frames with p5, ~90% with p3 and ~97% with p2, at the same
+    // SSIM (0.9919 for p1 to p4).
+    let duplicating = duplicated_output(target, v).is_some();
     let auto_cap = {
         let bits = pixels as f64 * v.fps as f64 * v.quality.cap_bits_per_pixel();
         ((bits / 1e6).round() as u32).clamp(4, 300)
@@ -179,8 +202,14 @@ pub fn encode_plan(target: CaptureTarget, v: &VideoConfig) -> EncodePlan {
     EncodePlan {
         width,
         height,
-        preset: if heavy { "p4" } else { "p5" },
-        quality_modes: !heavy,
+        preset: if duplicating {
+            "p2"
+        } else if heavy {
+            "p4"
+        } else {
+            "p5"
+        },
+        quality_modes: !heavy && !duplicating,
         split_frames: heavy && v.codec != Codec::H264,
         cq: v.quality.cq(v.codec),
         cap_mbps: v.bitrate_cap_mbps.unwrap_or(auto_cap),
@@ -206,14 +235,21 @@ pub fn record_args(spec: &RecordSpec) -> Vec<String> {
 
     push(&["-hide_banner", "-nostats", "-loglevel", "warning", "-y"]);
 
-    // Point sampling keeps 2× pixel-perfect; bicubic beats the default
-    // bilinear for every other rescale.
-    let scale_mode = if v.resolution == Resolution::Double { "point" } else { "bicubic" };
-    let mut graph = format!(
-        "gfxcapture=hwnd={hwnd}:max_framerate={rate}:resize_mode=scale_aspect:scale_mode={scale_mode}:width={w}:height={h}:capture_cursor=1",
-        hwnd = spec.target.hwnd,
-        rate = v.fps * CAPTURE_HEADROOM,
-    );
+    let rate = v.fps * CAPTURE_HEADROOM;
+    let mut graph = match duplicated_output(spec.target, v) {
+        // dup_frames=0: by default ddagrab repeats the last frame to keep
+        // up its rate, which would hide missed frames and waste encoding.
+        Some(output) => format!("ddagrab=output_idx={output}:framerate={rate}:dup_frames=0:draw_mouse=1"),
+        None => {
+            // Point sampling keeps 2× pixel-perfect; bicubic beats the
+            // default bilinear for every other rescale.
+            let scale_mode = if v.resolution == Resolution::Double { "point" } else { "bicubic" };
+            format!(
+                "gfxcapture=hwnd={hwnd}:max_framerate={rate}:resize_mode=scale_aspect:scale_mode={scale_mode}:width={w}:height={h}:capture_cursor=1",
+                hwnd = spec.target.hwnd,
+            )
+        }
+    };
     if !spec.audio.is_empty() {
         graph.push(',');
         graph.push_str(&align_filter(spec.audio_origin_unix_us));
@@ -317,7 +353,7 @@ mod tests {
     use std::path::PathBuf;
 
     fn target() -> CaptureTarget {
-        CaptureTarget { hwnd: 0x1234, width: 1900, height: 1030 }
+        CaptureTarget { hwnd: 0x1234, width: 1900, height: 1030, fullscreen_output: None }
     }
 
     #[test]
@@ -390,6 +426,55 @@ mod tests {
         assert!(s.contains("-c:a aac -b:a 160k"));
         assert!(s.contains("-segment_start_number 7"));
         assert!(args.last().unwrap().ends_with("seg_%06d.ts"));
+    }
+
+    fn fullscreen() -> CaptureTarget {
+        CaptureTarget { hwnd: 0x1234, width: 2560, height: 1440, fullscreen_output: Some(1) }
+    }
+
+    #[test]
+    fn fullscreen_games_use_desktop_duplication_with_a_fast_preset() {
+        let v = VideoConfig::default();
+        let dir = PathBuf::from("buf");
+        let s = record_args(&RecordSpec {
+            target: fullscreen(),
+            video: &v,
+            audio: &[],
+            mixed_track: true,
+            audio_bitrate_kbps: 160,
+            segment_dir: &dir,
+            start_index: 0,
+            audio_origin_unix_us: 0,
+        })
+        .join(" ");
+        assert!(s.contains("-filter_complex ddagrab=output_idx=1:framerate=120:dup_frames=0:draw_mouse=1,select="));
+        assert!(!s.contains("gfxcapture"));
+        let plan = encode_plan(fullscreen(), &v);
+        assert_eq!((plan.preset, plan.quality_modes), ("p2", false));
+        assert!(s.contains("-preset p2"));
+        assert!(!s.contains("multipass"));
+    }
+
+    #[test]
+    fn desktop_duplication_only_at_the_monitors_own_size() {
+        let native = VideoConfig::default();
+        assert_eq!(duplicated_output(fullscreen(), &native), Some(1));
+        // Not covering a monitor: the window is captured.
+        assert_eq!(duplicated_output(target(), &native), None);
+        // Any scaling stays with gfxcapture, which can scale.
+        for resolution in [Resolution::P1080, Resolution::P2160] {
+            let v = VideoConfig { resolution, ..Default::default() };
+            assert_eq!(duplicated_output(fullscreen(), &v), None, "{resolution:?}");
+            assert_eq!(encode_plan(fullscreen(), &v).preset, "p5", "{resolution:?}");
+        }
+        let double = VideoConfig { resolution: Resolution::Double, ..Default::default() };
+        let fhd = CaptureTarget { width: 1920, height: 1080, ..fullscreen() };
+        assert_eq!(duplicated_output(fhd, &double), None, "2× of 1080p is a real rescale");
+        // 2× of 1440p is too big for H.264, so it records native anyway.
+        assert_eq!(duplicated_output(fullscreen(), &double), Some(1));
+        // A fixed size that happens to be the monitor's is no scaling.
+        let v = VideoConfig { resolution: Resolution::P1440, ..Default::default() };
+        assert_eq!(duplicated_output(fullscreen(), &v), Some(1));
     }
 
     #[test]

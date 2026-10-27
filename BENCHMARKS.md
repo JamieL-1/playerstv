@@ -99,13 +99,26 @@ Still open: whether Windows shows all 60 frames on screen in that state
 (PresentMon would tell), and which capture method and frame timing
 playerstv should use.
 
-**Update, not yet re-measured.** The clips from that run show almost every
-lost frame as a repeat followed by a skip: the frame arrived, but late, and
-the fixed 60 fps output gave its slot to a repeat and then dropped it for
-sharing the next slot. So the frames reach ffmpeg, and the loss was in
-playerstv's own timing. playerstv now keeps each frame's capture time
-(variable frame rate), lets Windows deliver up to twice the target rate and
-thins frames out with a filter that tolerates uneven spacing.
+**Update, 2026-10-27** (one short round, 30 s measured, so indicative
+only). The loss had three causes:
+
+- The fixed 60 fps output turned every late frame into a repeat. playerstv
+  now keeps each frame's capture time (variable frame rate), which took
+  repeats to 0% and dropped frames to 27%.
+- Windows Graphics Capture delivers only about 73% of the frames of a game
+  that fills its monitor and is the only window on it, as a game started
+  from a launcher is. This held at every capture setting, with or without
+  an encoder. With another window open (a console, for example) it
+  delivered about 90%, which made earlier tests look better than real use.
+  Desktop Duplication delivered all of them.
+- Desktop Duplication merges frames that arrive while the encoder is busy,
+  so slower presets lose more: about 75% kept with p5, 97% with p2, at the
+  same SSIM.
+
+So playerstv now duplicates the monitor, with preset p2, when the game
+fills it at native resolution, and captures the window as before
+otherwise. In the short run, dropped frames went to 6.4% and video encoder
+use from 52% to 25%.
 
 The A/V offset came from the two streams starting their clocks at different
 moments: video at the first captured frame, audio when its feeder finished
