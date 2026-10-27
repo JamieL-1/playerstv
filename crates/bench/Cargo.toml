@@ -1,0 +1,61 @@
+[package]
+name = "playerstv-bench"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[lib]
+name = "ptv_bench"
+# Criterion benches only (benches/): libtest would reject their flags.
+bench = false
+
+[[bin]]
+name = "ptv-bench"
+path = "src/bin/ptv-bench.rs"
+bench = false
+
+[[bin]]
+name = "ptv-bench-game"
+path = "src/bin/ptv-bench-game/main.rs"
+bench = false
+
+[[bench]]
+name = "pattern"
+harness = false
+
+[dependencies]
+anyhow.workspace = true
+chrono.workspace = true
+clap.workspace = true
+crossbeam-channel.workspace = true
+serde.workspace = true
+toml.workspace = true
+serde_json = "1.0.154"
+playerstv-common = { path = "../common" }
+playerstv-core = { path = "../core" }
+wasapi = "0.26.0"
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Direct3D",
+    "Win32_Graphics_Direct3D11",
+    "Win32_Graphics_Dxgi",
+    "Win32_Graphics_Dxgi_Common",
+    "Win32_Graphics_Gdi",
+    "Win32_Security",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Performance",
+    "Win32_System_ProcessStatus",
+    "Win32_System_SystemInformation",
+    "Win32_System_Threading",
+    "Win32_UI_HiDpi",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
+[dev-dependencies]
+criterion.workspace = true
+
+[lints]
+workspace = true

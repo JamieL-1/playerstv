@@ -55,6 +55,29 @@ jobs:
       - name: Test
         run: cargo test --workspace --locked
 
+  bench:
+    name: Microbenchmarks
+    # Shared runners are too noisy to fail a build on, so this only records
+    # the numbers. The recorder comparison needs an NVIDIA GPU and runs
+    # locally: see BENCHMARKS.md.
+    runs-on: windows-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      # Neither crate embeds the frontend, so it isn't built here.
+      - name: cargo bench
+        run: cargo bench -p playerstv-core -p playerstv-bench --benches --locked -- --warm-up-time 1 --measurement-time 3
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: criterion
+          path: target/criterion
+
   audit:
     name: Dependency audit
     # Only reads Cargo.lock, so the cheaper Linux runner is fine.

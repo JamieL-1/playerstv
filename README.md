@@ -17,8 +17,24 @@ Supported games are Old School RuneScape (RuneLite), League of Legends
   while recording a session.
 - The window has a library, a player and a frame-exact trim editor.
 
-On an RTX 5080 recording RuneLite at 1900×1030, 60 fps: about 0.5% CPU, 11%
-NVENC and 9 MB of memory. A 30 s buffer takes about 40 MB of disk.
+Recording a 2560×1440, 60 fps game on an RTX 5080 with a 30 s buffer and
+game audio, playerstv used:
+
+| | |
+|---|---|
+| CPU | 0.05 cores (0.3% of 16 threads) |
+| Game frame times | no measurable change |
+| NVENC | 59% |
+| GPU memory | 290 MB |
+| RAM | 650 MB, nearly all of it the ffmpeg encoder |
+| Disk | 4.5 MB/s; a 30 s clip is about 100 MB |
+| Save time | 1.4 s |
+| Idle, no game running | no CPU, 6 MB of RAM |
+
+These are medians over 5 rounds, from the
+[full report](bench/published/2026-10-26-rtx5080-1440p60.md).
+[BENCHMARKS.md](BENCHMARKS.md) explains the method and how to compare
+playerstv with other recorders.
 
 ## Download
 
@@ -104,6 +120,8 @@ For live reload, run `npm run dev` in `ui/`, then
 - `crates/common`: paths, the control pipe and process helpers.
 - `crates/app`: the tray, hotkeys, the recording supervisor and the updater.
 - `crates/ui`: builds `playerstv.exe` and the window's Tauri backend.
+- `crates/bench`: the benchmark harness and its test game. Not shipped; see
+  [BENCHMARKS.md](BENCHMARKS.md).
 - `ui/`: the window's React frontend.
 
 FFmpeg writes 2-second segments to disk. Saving a clip joins the newest
@@ -146,3 +164,8 @@ Signing needs the `MINISIGN_KEY` secret, which must match `PUBLIC_KEY` in
   recovers it on the next start.
 - `Alt+F10` is also NVIDIA App's Instant Replay hotkey. If both are on, change
   one of them.
+- At 60 fps, clips can miss frames, each replaced by a repeat of the one
+  before. With the desktop otherwise idle, the benchmark lost about a third
+  of a fullscreen game's frames. Audio/video sync also varied between runs
+  (sound up to about 110 ms early). See
+  [BENCHMARKS.md](BENCHMARKS.md#known-issue-dropped-frames).
