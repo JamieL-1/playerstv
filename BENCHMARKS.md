@@ -16,6 +16,8 @@ That makes three checks possible:
   frame it finds and compares them with SSIM and PSNR.
 - **Audio/video sync**, with `--audio`. The game plays a quiet tone with a
   click at the start of every second and flashes a square on the same frame.
+  The clicks take turns being 20, 40, 60 and 80 ms long, so sound that's a
+  whole second late can't pass as in sync.
 
 While a recorder runs, `ptv-bench` samples once a second:
 
@@ -46,6 +48,10 @@ a **baseline** run with no recorder in the same round.
   per-run median, then the median across rounds with a 95% bootstrap
   interval.
 - Only release builds are measured.
+- No other recorder may be running. Before each run the harness waits for
+  the previous one to be closed (or, with `--yes`, fails the run).
+- A report only combines runs made with the same settings on the same
+  machine, driver and build, and a suite needs an empty results folder.
 
 ## Pass/fail rules
 

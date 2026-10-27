@@ -191,9 +191,13 @@ fn process_memory(values: &[(String, f64)], pids: &[u32], adapters_total: f64) -
 }
 
 /// Each field's median over a run's samples: one robust number per metric.
-pub fn medians(samples: &[Sample]) -> Sample {
+/// `None` with no samples, which would otherwise look like a free run.
+pub fn medians(samples: &[Sample]) -> Option<Sample> {
+    if samples.is_empty() {
+        return None;
+    }
     let m = |f: fn(&Sample) -> f64| crate::stats::median(&samples.iter().map(f).collect::<Vec<_>>()).unwrap_or(0.0);
-    Sample {
+    Some(Sample {
         t_s: m(|s| s.t_s),
         processes: m(|s| s.processes as f64).round() as usize,
         cpu_cores: m(|s| s.cpu_cores),
@@ -208,7 +212,7 @@ pub fn medians(samples: &[Sample]) -> Sample {
         sys_gpu_encode_pct: m(|s| s.sys_gpu_encode_pct),
         sys_vram_mb: m(|s| s.sys_vram_mb),
         sys_disk_write_mb_s: m(|s| s.sys_disk_write_mb_s),
-    }
+    })
 }
 
 #[cfg(test)]
@@ -236,6 +240,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "needs GPU performance counters; run with --ignored on a benchmark machine"]
     fn samples_this_machine() {
         let sampler = Sampler::start(vec!["explorer.exe".into()]).unwrap();
         // Opening the PDH query takes a moment before the first 1 s interval.
@@ -243,5 +248,12 @@ mod tests {
         let samples = sampler.finish().unwrap();
         let s = samples.first().expect("one sample after a second");
         assert!(s.sys_cpu_cores >= 0.0 && s.sys_cpu_cores <= procs::logical_cpus() as f64);
+    }
+
+    #[test]
+    fn no_samples_have_no_medians() {
+        assert_eq!(medians(&[]), None);
+        let s = |cpu_cores| Sample { cpu_cores, ..Default::default() };
+        assert_eq!(medians(&[s(1.0), s(3.0), s(2.0)]).map(|m| m.cpu_cores), Some(2.0));
     }
 }

@@ -72,6 +72,8 @@ impl RunResult {
     }
 }
 
+const NO_SAMPLES: &str = "no samples were taken while measuring; measure for longer (--seconds)";
+
 pub fn slug(recorder: Recorder) -> String {
     format!("{recorder:?}").to_lowercase()
 }
@@ -82,17 +84,8 @@ pub fn run(o: &RunOptions) -> Result<RunResult> {
     let started = chrono::Local::now().to_rfc3339();
     eprintln!("== {} (round {})", o.recorder.label(), o.round);
 
-    let running: Vec<String> = procs::list()?.into_iter().map(|p| p.exe).collect();
-    if o.recorder == Recorder::Playerstv && running.iter().any(|e| e == "playerstv.exe") {
-        bail!("playerstv is already running. Quit it from the tray first: it would hold the save hotkey.");
-    }
-    let mut warnings: Vec<String> = recorders::others_running(o.recorder, &running)
-        .into_iter()
-        .map(|r| format!("{r} was running and may have skewed the numbers"))
-        .collect();
-    for w in &warnings {
-        eprintln!("warning: {w}");
-    }
+    wait_for_others_to_close(o)?;
+    let mut warnings = Vec::new();
 
     let checklist = o.recorder.checklist(&o.settings);
     if !checklist.is_empty() && o.interactive {
@@ -128,7 +121,7 @@ pub fn run(o: &RunOptions) -> Result<RunResult> {
         environment: o.environment.clone(),
         checklist,
         warnings,
-        metrics: sample::medians(&m.samples),
+        metrics: sample::medians(&m.samples).context(NO_SAMPLES)?,
         samples: m.samples,
         frame_interval_ms: m.frame_interval_ms,
         game_work_ms: m.game_work_ms,
@@ -159,6 +152,7 @@ pub fn idle(o: &RunOptions) -> Result<IdleResult> {
     eprintln!("== {} idle", o.recorder.label());
     let run_dir = o.out_dir.join(format!("idle-{}", slug(o.recorder)));
     std::fs::create_dir_all(&run_dir)?;
+    wait_for_others_to_close(o)?;
     let ptv = match o.recorder {
         Recorder::Playerstv => Some(Playerstv::start(&o.playerstv_exe, &run_dir, &o.settings)?),
         r if o.interactive && !r.automatic() => {
@@ -181,13 +175,35 @@ pub fn idle(o: &RunOptions) -> Result<IdleResult> {
         started,
         measure_s: o.measure.as_secs_f64(),
         environment: o.environment.clone(),
-        metrics: sample::medians(&samples),
+        metrics: sample::medians(&samples).context(NO_SAMPLES)?,
         samples,
     };
     let path = o.out_dir.join(format!("idle-{}.json", slug(o.recorder)));
     std::fs::write(&path, serde_json::to_string_pretty(&result)?)?;
     eprintln!("   saved {}", path.display());
     Ok(result)
+}
+
+/// Waits until no recorder other than `o.recorder` is active: one left
+/// running from an earlier run would be counted in this run's numbers, and
+/// in the baseline's. Without `o.interactive` it fails instead.
+fn wait_for_others_to_close(o: &RunOptions) -> Result<()> {
+    loop {
+        let running: Vec<String> = procs::list()?.into_iter().map(|p| p.exe).collect();
+        if o.recorder == Recorder::Playerstv && running.iter().any(|e| e == "playerstv.exe") {
+            bail!("playerstv is already running. Quit it from the tray first: it would hold the save hotkey.");
+        }
+        let others = recorders::others_running(o.recorder, &running);
+        if others.is_empty() {
+            return Ok(());
+        }
+        let others = others.join(", ");
+        if !o.interactive {
+            bail!("{others} is running and would skew the numbers. Close it first.");
+        }
+        eprintln!("{others} is still running and would skew the numbers. Close it, then press Enter.");
+        std::io::stdin().read_line(&mut String::new())?;
+    }
 }
 
 struct Measured {

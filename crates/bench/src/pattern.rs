@@ -41,6 +41,11 @@ impl Pattern {
         index.is_multiple_of(self.fps as u64)
     }
 
+    /// The [`click_code`] of the second frame `index` falls in.
+    pub fn click_code(&self, index: u64) -> u64 {
+        click_code(index / self.fps as u64)
+    }
+
     pub fn frame_bytes(&self) -> usize {
         self.width as usize * self.height as usize * 4
     }
@@ -110,6 +115,18 @@ impl Pattern {
             }
         }
     }
+}
+
+/// How many click lengths the tone cycles through.
+pub const CLICK_CODES: u64 = 4;
+/// A click with code `c` lasts `c + 1` of these.
+pub const CLICK_UNIT_S: f64 = 0.02;
+
+/// Which length the click at the start of `second` has. The tone repeats
+/// every second, so without this a sound a whole second late would line up
+/// with the previous second's flash and look in sync.
+pub fn click_code(second: u64) -> u64 {
+    second % CLICK_CODES
 }
 
 fn gray(v: u8) -> [u8; 4] {

@@ -1,12 +1,15 @@
-//! The test game's sound: a faint 1 kHz tone with a louder 20 ms click at the
+//! The test game's sound: a faint 1 kHz tone with a louder click at the
 //! start of every second, timed from the same clock as the flash frames, so
-//! the analyzer can measure audio/video sync in a recording.
+//! the analyzer can measure audio/video sync in a recording. The clicks are
+//! 20 to 80 ms long in turn (see [`pattern::click_code`]), so a click can't
+//! be mistaken for one a second earlier or later.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::{Context, Result};
+use ptv_bench::pattern;
 use wasapi::{DeviceEnumerator, Direction, SampleType, StreamMode, WaveFormat};
 
 pub const RATE: u32 = 48_000;
@@ -16,11 +19,12 @@ const TONE_HZ: f64 = 1000.0;
 // only the ratio between these matters.
 pub const QUIET: f32 = 0.005;
 pub const LOUD: f32 = 0.05;
-pub const CLICK_SAMPLES: u64 = RATE as u64 / 50;
 
 /// One sample at position `n` (samples since `t0`).
 pub fn sample(n: u64) -> f32 {
-    let amp = if n % (RATE as u64) < CLICK_SAMPLES { LOUD } else { QUIET };
+    let (second, into) = (n / RATE as u64, n % RATE as u64);
+    let click = ((pattern::click_code(second) + 1) as f64 * pattern::CLICK_UNIT_S * RATE as f64) as u64;
+    let amp = if into < click { LOUD } else { QUIET };
     amp * (std::f64::consts::TAU * TONE_HZ * n as f64 / RATE as f64).sin() as f32
 }
 

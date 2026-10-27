@@ -180,6 +180,10 @@ fn main() -> Result<()> {
 
 fn suite(recorders: &[Recorder], rounds: u32, idle: bool, common: &Common) -> Result<()> {
     let out = out_dir(common);
+    // Left-over runs would be mixed into this suite's report.
+    if out.exists() && report::load(&out).ok().is_none_or(|(runs, idle)| !runs.is_empty() || !idle.is_empty()) {
+        bail!("{} already holds results. Pick a new folder with --out.", out.display());
+    }
     let environment = ptv_bench::env::collect();
     let mut lineup: Vec<Recorder> = recorders.iter().copied().filter(|&r| r != Recorder::None).collect();
     lineup.sort();
@@ -235,6 +239,7 @@ fn write_report(dir: &Path) -> Result<()> {
     if runs.is_empty() && idle.is_empty() {
         bail!("no results in {}", dir.display());
     }
+    report::check_consistent(&runs, &idle)?;
     let report = report::build(&runs, idle);
     std::fs::write(dir.join("report.json"), serde_json::to_string_pretty(&report)?)?;
     let md = report::markdown(&report);

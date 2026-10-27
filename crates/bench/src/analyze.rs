@@ -68,8 +68,10 @@ pub fn analyze(ffmpeg: &Path, clip: &Path, pattern: Pattern, log: Option<&[Frame
     };
     let av_offset_ms = if probe.audio_tracks > 0 {
         let clicks = click_times(ffmpeg, clip, probe.audio_start_s)?;
-        let flashes: Vec<f64> =
-            frames.iter().filter(|f| f.index.is_some_and(|i| pattern.is_flash(i))).map(|f| f.pts_s).collect();
+        let flashes: Vec<(f64, u64)> = frames
+            .iter()
+            .filter_map(|f| f.index.filter(|&i| pattern.is_flash(i)).map(|i| (f.pts_s, pattern.click_code(i))))
+            .collect();
         av_offset_ms(&flashes, &clicks)
     } else {
         None
@@ -314,8 +316,15 @@ fn parse_after(log: &str, line_has: &str, key: &str) -> Option<f64> {
     line.split(key).nth(1)?.split_whitespace().next()?.parse().ok()
 }
 
-/// Times of the tone's clicks in the first audio track, in clip seconds.
-fn click_times(ffmpeg: &Path, clip: &Path, audio_start_s: f64) -> Result<Vec<f64>> {
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Click {
+    at_s: f64,
+    /// From its length; `None` if that isn't one of the tone's lengths.
+    code: Option<u64>,
+}
+
+/// The tone's clicks in the first audio track, timed in clip seconds.
+fn click_times(ffmpeg: &Path, clip: &Path, audio_start_s: f64) -> Result<Vec<Click>> {
     const RATE: f64 = 48_000.0;
     let out = Command::new(ffmpeg)
         .args(["-hide_banner", "-loglevel", "error", "-i"])
@@ -327,39 +336,60 @@ fn click_times(ffmpeg: &Path, clip: &Path, audio_start_s: f64) -> Result<Vec<f64
         bail!("ffmpeg couldn't decode audio: {}", String::from_utf8_lossy(&out.stderr));
     }
     let samples: Vec<f32> = out.stdout.as_chunks::<4>().0.iter().map(|b| f32::from_le_bytes(*b)).collect();
-    Ok(click_onsets(&samples, RATE).into_iter().map(|t| audio_start_s + t).collect())
+    Ok(find_clicks(&samples, RATE).into_iter().map(|c| Click { at_s: audio_start_s + c.at_s, ..c }).collect())
 }
 
-/// Where the signal first goes over half its peak after at least half a
-/// second under it: the start of each click.
-fn click_onsets(samples: &[f32], rate: f64) -> Vec<f64> {
+/// Each burst over half the signal's peak, after at least half a second
+/// under it, is a click: it starts at its first loud sample and its length
+/// gives its code. Bursts cut off by the start or end of the audio are left
+/// out, since their start or length would be wrong.
+fn find_clicks(samples: &[f32], rate: f64) -> Vec<Click> {
     let peak = samples.iter().fold(0f32, |m, s| m.max(s.abs()));
     if peak == 0.0 {
         return Vec::new();
     }
     let threshold = peak / 2.0;
     let quiet_gap = (rate / 2.0) as usize;
-    let mut onsets = Vec::new();
-    let mut last_loud: Option<usize> = None;
+    let edge = (rate / 1000.0) as usize;
+    let click = |(first, last): (usize, usize)| -> Option<Click> {
+        if first <= edge || last + edge >= samples.len() {
+            return None;
+        }
+        let units = (last - first + 1) as f64 / rate / pattern::CLICK_UNIT_S;
+        let code = units.round() - 1.0;
+        let fits = (0.0..pattern::CLICK_CODES as f64).contains(&code) && (units - units.round()).abs() < 1.0 / 3.0;
+        Some(Click { at_s: first as f64 / rate, code: fits.then_some(code as u64) })
+    };
+
+    let mut clicks = Vec::new();
+    let mut burst: Option<(usize, usize)> = None;
     for (n, s) in samples.iter().enumerate() {
-        if s.abs() >= threshold {
-            if last_loud.is_none_or(|l| n - l > quiet_gap) {
-                onsets.push(n as f64 / rate);
-            }
-            last_loud = Some(n);
+        if s.abs() < threshold {
+            continue;
+        }
+        match &mut burst {
+            Some((_, last)) if n - *last <= quiet_gap => *last = n,
+            _ => clicks.extend(burst.replace((n, n)).and_then(click)),
         }
     }
-    onsets
+    clicks.extend(burst.and_then(click));
+    clicks
 }
 
-/// Median offset from each flash to the nearest click, if any is within
-/// half a second.
-fn av_offset_ms(flashes: &[f64], clicks: &[f64]) -> Option<f64> {
+/// Median offset from each flash to the nearest click with the same code.
+/// Clicks with one code are [`pattern::CLICK_CODES`] seconds apart, so the
+/// match is unambiguous for sound up to half that early or late.
+fn av_offset_ms(flashes: &[(f64, u64)], clicks: &[Click]) -> Option<f64> {
+    let limit = pattern::CLICK_CODES as f64 / 2.0;
     let offsets: Vec<f64> = flashes
         .iter()
-        .filter_map(|&v| {
-            let a = clicks.iter().copied().min_by(|a, b| (a - v).abs().total_cmp(&(b - v).abs()))?;
-            ((a - v).abs() < 0.5).then_some((a - v) * 1000.0)
+        .filter_map(|&(v, code)| {
+            let a = clicks
+                .iter()
+                .filter(|c| c.code == Some(code))
+                .map(|c| c.at_s)
+                .min_by(|a, b| (a - v).abs().total_cmp(&(b - v).abs()))?;
+            ((a - v).abs() < limit).then_some((a - v) * 1000.0)
         })
         .collect();
     stats::median(&offsets)
@@ -385,20 +415,38 @@ mod tests {
         assert_eq!((c.dropped, c.skipped_by_game), (2, 1));
     }
 
-    #[test]
-    fn finds_click_onsets_and_offset() {
-        let rate = 1000.0;
-        let mut s = vec![0.05f32; 3000];
-        for start in [100, 1100, 2100] {
-            for v in &mut s[start..start + 20] {
-                *v = 0.8;
-            }
+    /// `seconds` of tone at 1 kHz, each second's click as the game plays
+    /// it, with the sound `delay_ms` late.
+    fn tone(seconds: u64, delay_ms: usize) -> Vec<f32> {
+        let rate = 1000;
+        let mut s = vec![0.05f32; seconds as usize * rate + delay_ms];
+        for second in 0..seconds {
+            let start = second as usize * rate + delay_ms;
+            let len = ((pattern::click_code(second) + 1) as f64 * pattern::CLICK_UNIT_S * rate as f64) as usize;
+            s[start..start + len].fill(0.8);
         }
-        let clicks = click_onsets(&s, rate);
-        assert_eq!(clicks, [0.1, 1.1, 2.1]);
-        let flashes = [0.09, 1.09, 2.09];
+        s
+    }
+
+    #[test]
+    fn finds_clicks_and_offset() {
+        let s = tone(6, 100);
+        let clicks = find_clicks(&s, 1000.0);
+        let codes: Vec<Option<u64>> = clicks.iter().map(|c| c.code).collect();
+        assert_eq!(codes, [Some(0), Some(1), Some(2), Some(3), Some(0), Some(1)]);
+        assert_eq!(clicks[2].at_s, 2.1);
+
+        let flashes: Vec<(f64, u64)> = (0..6).map(|s| (s as f64 - 0.01 + 0.1, pattern::click_code(s))).collect();
         let off = av_offset_ms(&flashes, &clicks).unwrap();
         assert!((off - 10.0).abs() < 1e-6, "{off}");
+    }
+
+    #[test]
+    fn sound_a_whole_second_late_is_not_in_sync() {
+        let clicks = find_clicks(&tone(8, 1000), 1000.0);
+        let flashes: Vec<(f64, u64)> = (0..8).map(|s| (s as f64, pattern::click_code(s))).collect();
+        let off = av_offset_ms(&flashes, &clicks).unwrap();
+        assert!((off - 1000.0).abs() < 1e-6, "{off}");
     }
 
     #[test]

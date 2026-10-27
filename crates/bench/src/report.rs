@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::path::Path;
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 
 use crate::recorders::Recorder;
@@ -195,6 +195,39 @@ pub fn load(dir: &Path) -> Result<(Vec<RunResult>, Vec<IdleResult>)> {
     runs.sort_by_key(|r: &RunResult| (r.round, r.recorder));
     idle.sort_by_key(|r: &IdleResult| r.recorder);
     Ok((runs, idle))
+}
+
+/// Fails if the runs weren't all made with the same settings on the same
+/// machine. Baselines are matched by round and the report describes every
+/// run with the first one's setup, so a mix would compare unlike numbers.
+pub fn check_consistent(runs: &[RunResult], idle: &[IdleResult]) -> Result<()> {
+    let setup = |r: &RunResult| (r.settings, r.gpu_load, r.warmup_s, r.measure_s);
+    let mut problems = Vec::new();
+    if let Some(first) = runs.first() {
+        for r in runs.iter().filter(|r| setup(r) != setup(first)) {
+            problems.push(format!(
+                "{} round {} used different settings from {} round {}",
+                r.recorder.label(),
+                r.round,
+                first.recorder.label(),
+                first.round
+            ));
+        }
+    }
+    let machines = runs
+        .iter()
+        .map(|r| (&r.environment, format!("{} round {}", r.recorder.label(), r.round)))
+        .chain(idle.iter().map(|r| (&r.environment, format!("{} idle", r.recorder.label()))));
+    let mut first_machine = None;
+    for (env, name) in machines {
+        if *first_machine.get_or_insert(env) != env {
+            problems.push(format!("{name} ran on a different machine, driver or build"));
+        }
+    }
+    if !problems.is_empty() {
+        bail!("these results can't be compared:\n  {}", problems.join("\n  "));
+    }
+    Ok(())
 }
 
 pub fn build(runs: &[RunResult], idle: Vec<IdleResult>) -> Report {
@@ -480,5 +513,24 @@ mod tests {
         assert!(md.contains("| Whole-system CPU, cores above baseline |"));
         assert!(md.contains("OBS replay buffer round 3: clip is 20.00 s, shorter than the 30 s buffer"));
         assert!(!md.contains('\u{2014}'), "no em dashes in the report");
+    }
+
+    #[test]
+    fn rejects_runs_from_different_setups() {
+        let mut runs = vec![run(Recorder::None, 1, 1.0, 0), run(Recorder::Playerstv, 1, 1.1, 0)];
+        check_consistent(&runs, &[]).unwrap();
+
+        let mut old = run(Recorder::None, 2, 1.0, 0);
+        old.settings.width = 2560;
+        runs.push(old);
+        let err = check_consistent(&runs, &[]).unwrap_err().to_string();
+        assert!(err.contains("No recorder round 2 used different settings"), "{err}");
+
+        runs.pop();
+        let mut elsewhere = run(Recorder::Playerstv, 2, 1.1, 0);
+        elsewhere.environment.gpu_driver = "999.99".into();
+        runs.push(elsewhere);
+        let err = check_consistent(&runs, &[]).unwrap_err().to_string();
+        assert!(err.contains("playerstv round 2 ran on a different machine"), "{err}");
     }
 }
