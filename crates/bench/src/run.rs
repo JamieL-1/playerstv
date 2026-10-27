@@ -221,6 +221,7 @@ fn measure(o: &RunOptions, run_dir: &Path, ptv: Option<&Playerstv>) -> Result<Me
     // Long enough to outlive a slow save; it's closed as soon as we're done.
     let game_seconds = (o.warmup + o.measure).as_secs() + 300;
     let mut game = Game::start(o, &log_path, game_seconds)?;
+    window::focus_game(Duration::from_secs(10))?;
 
     if let Some(p) = ptv {
         p.wait_recording(Duration::from_secs(30))?;
@@ -235,6 +236,9 @@ fn measure(o: &RunOptions, run_dir: &Path, ptv: Option<&Playerstv>) -> Result<Me
     std::thread::sleep(o.measure);
     let to_us = frame_log::unix_us_now();
     let samples = sampler.finish()?;
+    if !window::game_has_focus() {
+        warnings.push("the test game wasn't the foreground window by the end of measuring".into());
+    }
 
     let saved = match o.recorder {
         Recorder::None => None,
@@ -250,9 +254,15 @@ fn measure(o: &RunOptions, run_dir: &Path, ptv: Option<&Playerstv>) -> Result<Me
             let hotkey = o.hotkey.as_deref().or(r.hotkey()).context("no save hotkey")?;
             let before = clips::snapshot(&dir);
             let since = Instant::now();
-            input::press(hotkey)?;
+            // Watched for while the keys are still held, so the hold
+            // doesn't set a floor under the save time.
+            let held = input::press(hotkey)?;
             eprintln!("   pressed {hotkey}, waiting for the clip in {}", dir.display());
-            match clips::wait_for_new(&dir, &before, since, Duration::from_secs(120)) {
+            let found = clips::wait_for_new(&dir, &before, since, Duration::from_secs(120));
+            if let Err(e) = held.release() {
+                warnings.push(format!("{e:#}"));
+            }
+            match found {
                 Ok(found) => Some(found),
                 Err(e) => {
                     warnings.push(format!("{e:#}"));

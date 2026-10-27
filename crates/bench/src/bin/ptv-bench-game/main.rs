@@ -1,3 +1,7 @@
+// A windowed (GUI) program like a real game: the console version, given
+// a console window of its own, was captured differently (~90% of frames
+// instead of ~73%), so it measured something no player sees.
+#![windows_subsystem = "windows"]
 //! A stand-in game for benchmarks: draws `ptv_bench::pattern` frames at a
 //! fixed rate, logs when every frame was presented and, with `--tone`, plays
 //! a quiet clicking tone. Close it with Esc, or pass `--seconds`.

@@ -1,9 +1,12 @@
 //! WASAPI capture threads that stream 48 kHz stereo f32 PCM into named pipes.
 //!
-//! Each feeder runs on a wall clock: if the source is silent and WASAPI hands
-//! us nothing (common for process loopback), silence is written so ffmpeg's
-//! audio timeline keeps pace with video; if data arrives late after padding,
-//! the overshoot is dropped. Drift is therefore bounded to a few tens of ms.
+//! Each feeder runs on a wall clock that starts at an origin the recorder
+//! picks before launching ffmpeg, and ffmpeg times video on the same clock.
+//! Silence fills the time until the source opens (process loopback can take
+//! 100 ms) and whenever WASAPI hands us nothing (common for process
+//! loopback), so ffmpeg's audio timeline keeps pace with video; if data
+//! arrives late after padding, the overshoot is dropped. Drift is therefore
+//! bounded to a few tens of ms.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -44,15 +47,16 @@ pub struct PipeFeeder {
 
 impl PipeFeeder {
     /// Creates the pipe and starts the feeder thread. ffmpeg must then be
-    /// started with `pipe_path()` as an input.
-    pub fn start(source: AudioSource, pipe_name: String) -> Result<Self> {
+    /// started with `pipe_path()` as an input. The first sample written is
+    /// the sound at `origin`.
+    pub fn start(source: AudioSource, pipe_name: String, origin: Instant) -> Result<Self> {
         let server = PipeServer::create(&pipe_name)?;
         let stop = Arc::new(AtomicBool::new(false));
         let thread = {
             let stop = stop.clone();
             let name = pipe_name.clone();
             std::thread::Builder::new().name(format!("audio:{name}")).spawn(move || {
-                if let Err(e) = run(source, &server, &stop) {
+                if let Err(e) = run(source, &server, &stop, origin) {
                     if !stop.load(Ordering::Relaxed) {
                         tracing::warn!("audio feeder {name} ended: {e:#}");
                     }
@@ -127,7 +131,7 @@ fn open_client(source: &AudioSource) -> Result<AudioClient> {
     }
 }
 
-fn run(source: AudioSource, server: &PipeServer, stop: &AtomicBool) -> Result<()> {
+fn run(source: AudioSource, server: &PipeServer, stop: &AtomicBool, origin: Instant) -> Result<()> {
     server.wait_for_client()?;
     if stop.load(Ordering::Relaxed) {
         return Ok(());
@@ -144,11 +148,23 @@ fn run(source: AudioSource, server: &PipeServer, stop: &AtomicBool) -> Result<()
         }
     };
 
-    let started = Instant::now();
     let mut written: u64 = 0;
     let mut packet = Vec::new();
     let silence = vec![0u8; BYTES_PER_FRAME * MAX_AHEAD_FRAMES as usize];
     let mut stats = Stats::default();
+    let pad_to = |written: &mut u64, upto: u64, stats: &mut Stats| -> Result<()> {
+        while *written < upto {
+            let n = (upto - *written).min(MAX_AHEAD_FRAMES) as usize;
+            server.write_all(&silence[..n * BYTES_PER_FRAME])?;
+            *written += n as u64;
+            stats.padded += n as u64;
+        }
+        Ok(())
+    };
+
+    // Silence for the time before the stream opened, so the first captured
+    // packets land at the time they were captured, not at the origin.
+    pad_to(&mut written, clock_frames(origin), &mut stats)?;
 
     while !stop.load(Ordering::Relaxed) {
         stats.maybe_log(&source);
@@ -170,7 +186,7 @@ fn run(source: AudioSource, server: &PipeServer, stop: &AtomicBool) -> Result<()
                         bytes.fill(0);
                     }
                     stats.observe(bytes, info.flags.silent);
-                    let ahead_limit = clock_frames(started) + MAX_AHEAD_FRAMES;
+                    let ahead_limit = clock_frames(origin) + MAX_AHEAD_FRAMES;
                     if written >= ahead_limit {
                         stats.dropped += got as u64;
                         continue; // late burst after we already padded: drop it
@@ -184,13 +200,12 @@ fn run(source: AudioSource, server: &PipeServer, stop: &AtomicBool) -> Result<()
             None => std::thread::sleep(Duration::from_millis(10)),
         }
 
-        // Fill gaps so the timeline never stalls.
-        let expected = clock_frames(started);
-        while written + MAX_BEHIND_FRAMES < expected {
-            let n = (expected - written).min(MAX_AHEAD_FRAMES) as usize;
-            server.write_all(&silence[..n * BYTES_PER_FRAME])?;
-            written += n as u64;
-            stats.padded += n as u64;
+        // Fill gaps so the timeline never stalls. Only after reading: sound
+        // already queued in WASAPI covers a pause in this thread, and padding
+        // first would push it late.
+        let expected = clock_frames(origin);
+        if written + MAX_BEHIND_FRAMES < expected {
+            pad_to(&mut written, expected, &mut stats)?;
         }
     }
     Ok(())
@@ -261,8 +276,8 @@ impl Drop for Stream {
     }
 }
 
-fn clock_frames(started: Instant) -> u64 {
-    let e: Duration = started.elapsed();
+fn clock_frames(origin: Instant) -> u64 {
+    let e: Duration = origin.elapsed();
     e.as_micros() as u64 * AUDIO_RATE as u64 / 1_000_000
 }
 

@@ -3,6 +3,12 @@
 //! Video never leaves the GPU: `gfxcapture` (Windows Graphics Capture) yields
 //! D3D11 textures, scales them itself, and NVENC encodes them directly. Audio
 //! arrives as raw f32 PCM over named pipes fed by the capture crate.
+//!
+//! Frames keep the time Windows captured them at (variable frame rate).
+//! Forcing them onto a fixed 1/fps grid used to lose about a third of a
+//! 60 fps game's frames: one that landed a little late left its slot to a
+//! repeat of the previous frame, then shared the next slot with its
+//! successor and was dropped.
 
 use std::path::Path;
 
@@ -40,9 +46,36 @@ pub struct RecordSpec<'a> {
     pub audio_bitrate_kbps: u32,
     pub segment_dir: &'a Path,
     pub start_index: u64,
+    /// Wall-clock time, in microseconds since the Unix epoch, of the audio
+    /// inputs' first sample. Video is stamped on the same clock so the two
+    /// line up however long each takes to start.
+    pub audio_origin_unix_us: u64,
 }
 
 pub const MIXED_TRACK_TITLE: &str = "Mixed";
+
+/// Windows Graphics Capture may deliver frames this many times faster than
+/// the target rate, and [`pace_filter`] thins them out. Capping capture at
+/// exactly the target rate made Windows skip frames that arrived a little
+/// early, as frames of a 60 fps game shown on a faster monitor often do.
+const CAPTURE_HEADROOM: u32 = 2;
+
+/// Passes at most `fps` frames a second on average, without needing them
+/// evenly spaced: each second earns `fps` credits, a frame costs one, and
+/// one may arrive up to a quarter of a credit early. Unused credit is capped
+/// at two frames, so a game that slows down and recovers can't burst.
+fn pace_filter(fps: u32) -> String {
+    format!("select='st(0,if(n,min(2,ld(0)+(t-ld(1))*{fps}),1));st(1,t);if(gte(ld(0),0.75),st(0,ld(0)-1)*0+1,0)'")
+}
+
+/// Moves video timestamps onto the audio's clock: the first frame is placed
+/// at its wall-clock time after `origin_unix_us`, and the rest follow at
+/// their capture times. gfxcapture alone starts video at zero on its first
+/// frame, while audio starts at zero when its feeder does, a varying
+/// 10 to 110 ms apart.
+fn align_filter(origin_unix_us: u64) -> String {
+    format!("setpts='PTS+if(eq(N,0),st(0,(RTCTIME-{origin_unix_us})/1000000),ld(0))/TB'")
+}
 
 fn has_mix(spec: &RecordSpec) -> bool {
     spec.mixed_track && spec.audio.len() >= 2
@@ -116,8 +149,8 @@ pub fn encoded_size(target: CaptureTarget, video: &VideoConfig) -> (u32, u32) {
     }
 }
 
-/// Above this many pixels per second, the slower high-quality encoder modes
-/// (multipass, lookahead) can't keep up even on an RTX 5080: measured ~87 fps
+/// Above this many pixels per second, the slower high-quality encoder mode
+/// (multipass) can't keep up even on an RTX 5080: measured ~87 fps
 /// for 4K120 HEVC with them vs ~111 fps with split-frame encoding.
 const HEAVY_PIXEL_RATE: u64 = 520_000_000;
 
@@ -127,7 +160,7 @@ pub struct EncodePlan {
     pub width: u32,
     pub height: u32,
     pub preset: &'static str,
-    /// Multipass (quarter-res) and rate-control lookahead.
+    /// Multipass (quarter-res).
     pub quality_modes: bool,
     /// Split each frame across multiple NVENC engines (HEVC/AV1 only).
     pub split_frames: bool,
@@ -177,10 +210,17 @@ pub fn record_args(spec: &RecordSpec) -> Vec<String> {
     // bilinear for every other rescale.
     let scale_mode = if v.resolution == Resolution::Double { "point" } else { "bicubic" };
     let mut graph = format!(
-        "gfxcapture=hwnd={hwnd}:max_framerate={fps}:resize_mode=scale_aspect:scale_mode={scale_mode}:width={w}:height={h}:capture_cursor=1[v]",
+        "gfxcapture=hwnd={hwnd}:max_framerate={rate}:resize_mode=scale_aspect:scale_mode={scale_mode}:width={w}:height={h}:capture_cursor=1",
         hwnd = spec.target.hwnd,
-        fps = v.fps,
+        rate = v.fps * CAPTURE_HEADROOM,
     );
+    if !spec.audio.is_empty() {
+        graph.push(',');
+        graph.push_str(&align_filter(spec.audio_origin_unix_us));
+    }
+    graph.push(',');
+    graph.push_str(&pace_filter(v.fps));
+    graph.push_str("[v]");
     let mix = has_mix(spec);
     if mix {
         graph.push(';');
@@ -208,6 +248,10 @@ pub fn record_args(spec: &RecordSpec) -> Vec<String> {
 
     let plan = encode_plan(spec.target, v);
     let gop = (v.fps * SEGMENT_SECONDS).to_string();
+    // NVENC budgets bits per frame from the frame rate it's told, which is
+    // the capture rate, CAPTURE_HEADROOM times the rate frames really
+    // arrive at. Scaling the cap by the same factor keeps it per second.
+    let cap_mbps = plan.cap_mbps * CAPTURE_HEADROOM;
     push(&[
         "-c:v", v.codec.nvenc_encoder(),
         "-preset", plan.preset,
@@ -215,25 +259,35 @@ pub fn record_args(spec: &RecordSpec) -> Vec<String> {
         "-rc", "vbr",
         "-cq", &plan.cq.to_string(),
         "-b:v", "0",
-        "-maxrate", &format!("{}M", plan.cap_mbps),
-        "-bufsize", &format!("{}M", plan.cap_mbps * 2),
+        "-maxrate", &format!("{cap_mbps}M"),
+        "-bufsize", &format!("{}M", cap_mbps * 2),
         // Adaptive quantisation spends bits on detail (text, UI edges) rather
         // than flat areas; B-frames as references are nearly free quality.
         "-spatial-aq", "1",
         "-temporal-aq", "1",
         "-bf", "3",
         "-b_ref_mode", "middle",
+        // A keyframe every segment by time, since frames needn't come at
+        // the full rate; -g only caps the run of frames between them.
         "-g", &gop,
         "-keyint_min", &gop,
+        "-force_key_frames", &format!("expr:gte(t,n_forced*{SEGMENT_SECONDS})"),
         "-forced-idr", "1",
         // NVENC's default surface pool costs ~100 MB for nothing at these
-        // frame rates; it raises the count itself when lookahead/B-frames
-        // need more. No output delay means clips include the newest frames.
+        // frame rates; it raises the count itself when B-frames need more.
+        // No output delay means clips include the newest frames. It also
+        // turns rate-control lookahead off, so that isn't asked for: it
+        // changed nothing in the output but cost ~95 MB of RAM.
         "-surfaces", "8",
         "-delay", "0",
+        // Keep each frame's capture time. The segment muxer doesn't say it
+        // allows a variable rate, so ffmpeg would otherwise force 1/fps
+        // slots; 1/90000 is MPEG-TS's own clock.
+        "-fps_mode", "vfr",
+        "-enc_time_base", "1/90000",
     ]);
     if plan.quality_modes {
-        push(&["-multipass", "qres", "-rc-lookahead", "16"]);
+        push(&["-multipass", "qres"]);
     }
     if plan.split_frames {
         push(&["-split_encode_mode", "forced"]);
@@ -304,11 +358,16 @@ mod tests {
             audio_bitrate_kbps: 160,
             segment_dir: &dir,
             start_index: 7,
+            audio_origin_unix_us: 1_793_000_000_000_000,
         };
         let args = record_args(&spec);
         let s = args.join(" ");
+        // Capture at twice the rate, timed on the audio's clock, then paced
+        // down to 120 fps.
         assert!(s.contains(
-            "gfxcapture=hwnd=4660:max_framerate=120:resize_mode=scale_aspect:scale_mode=bicubic:width=-2:height=-2"
+            "gfxcapture=hwnd=4660:max_framerate=240:resize_mode=scale_aspect:scale_mode=bicubic:width=-2:height=-2:capture_cursor=1,\
+             setpts='PTS+if(eq(N,0),st(0,(RTCTIME-1793000000000000)/1000000),ld(0))/TB',\
+             select='st(0,if(n,min(2,ld(0)+(t-ld(1))*120),1));st(1,t);if(gte(ld(0),0.75),st(0,ld(0)-1)*0+1,0)'[v]"
         ));
         assert!(s.contains(
             "[v];[0:a]volume=1.50[m0];[1:a]volume=0.80[m1];[m0][m1]amix=inputs=2:normalize=0:dropout_transition=0,alimiter=limit=0.97:level=false[mix]"
@@ -318,10 +377,16 @@ mod tests {
         assert_eq!(track_titles(&spec), ["Mixed", "Game", "Mic"]);
         assert!(s.contains("-c:v hevc_nvenc -preset p5 -tune hq -rc vbr -cq 22 -b:v 0"));
         assert!(s.contains("-spatial-aq 1 -temporal-aq 1 -bf 3 -b_ref_mode middle"));
-        assert!(s.contains("-multipass qres -rc-lookahead 16"));
+        assert!(s.contains("-multipass qres"));
+        // -delay 0 disables lookahead, so asking for it only costs memory.
+        assert!(!s.contains("lookahead"));
         assert!(!s.contains("rgb_mode"));
         assert!(s.contains("-g 240"));
-        assert!(s.contains("-surfaces 8 -delay 0"));
+        assert!(s.contains("-force_key_frames expr:gte(t,n_forced*2)"));
+        assert!(s.contains("-surfaces 8 -delay 0 -fps_mode vfr -enc_time_base 1/90000"));
+        // The cap is doubled to match the doubled rate NVENC is told.
+        let cap = encode_plan(target(), &v).cap_mbps;
+        assert!(s.contains(&format!("-maxrate {}M -bufsize {}M", cap * 2, cap * 4)));
         assert!(s.contains("-c:a aac -b:a 160k"));
         assert!(s.contains("-segment_start_number 7"));
         assert!(args.last().unwrap().ends_with("seg_%06d.ts"));
@@ -343,6 +408,7 @@ mod tests {
             audio_bitrate_kbps: 160,
             segment_dir: &dir,
             start_index: 0,
+            audio_origin_unix_us: 0,
         })
         .join(" ");
         assert!(s.contains("scale_mode=point:width=3800:height=2060"));
@@ -411,6 +477,7 @@ mod tests {
                 audio_bitrate_kbps: 160,
                 segment_dir: &dir,
                 start_index: 0,
+                audio_origin_unix_us: 0,
             })
             .join(" ");
             assert!(!s.contains("rgb_mode"), "{codec:?}");
@@ -432,6 +499,7 @@ mod tests {
                 audio_bitrate_kbps: 160,
                 segment_dir: &dir,
                 start_index: 0,
+                audio_origin_unix_us: 0,
             };
             let s = record_args(&spec).join(" ");
             assert!(!s.contains("amix"));
@@ -453,6 +521,7 @@ mod tests {
                 audio_bitrate_kbps: 160,
                 segment_dir: &dir,
                 start_index: 0,
+                audio_origin_unix_us: 0,
             })
             .join(" ")
         };
@@ -476,9 +545,13 @@ mod tests {
             audio_bitrate_kbps: 160,
             segment_dir: &dir,
             start_index: 0,
+            audio_origin_unix_us: 0,
         })
         .join(" ");
         assert!(!s.contains("-c:a"));
         assert!(!s.contains("0:a"));
+        // No audio to line up with, so capture times are kept as they are.
+        assert!(!s.contains("setpts"));
+        assert!(s.contains("capture_cursor=1,select="));
     }
 }

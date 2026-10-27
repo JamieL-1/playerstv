@@ -99,6 +99,54 @@ Still open: whether Windows shows all 60 frames on screen in that state
 (PresentMon would tell), and which capture method and frame timing
 playerstv should use.
 
+**Update, 2026-10-27** (short single rounds, so indicative only):
+
+- The fixed 60 fps output turned every frame that arrived late into a
+  repeat. playerstv now keeps each frame's capture time (variable frame
+  rate): repeats went to 0%, dropped frames to 27%.
+- The rest is lost in capture. Windows Graphics Capture delivered about
+  73% of the frames of a game that fills its monitor and is the only
+  window on it, as a game started from a launcher is, at every capture
+  setting and with no encoder at all. With another window open (a
+  console, for example) it delivered about 90%, which made some earlier
+  tests look better than real use.
+- Desktop Duplication delivered every frame, but records the whole
+  monitor, so it could catch other windows and notifications. playerstv
+  only ever records the game window, so it isn't used.
+
+- It's Windows, not ffmpeg. `ptv-wgc-probe` captures the game window with
+  Windows Graphics Capture directly, without ffmpeg, and reads every
+  frame's index. It kept 68 to 71% of frames whether the frame pool held 2
+  buffers or 8, and 61% with a 1 ms minimum update interval, against 74 to
+  76% for ffmpeg's `gfxcapture`. Every frame it got was a new one: Windows
+  never delivers the rest. The same held with the game in a window.
+- The test game is now a windowed (GUI) program like a real game. As a
+  console program with a console window of its own it was captured at
+  about 90%, which no player would see.
+
+- How many frames Windows Graphics Capture delivers depends on what else
+  is on the desktop. The probe kept ~73% with the game alone and ~85% with
+  a Notepad window open behind it. In the harness, playerstv kept 97 to 98%
+  (three runs), for reasons not yet pinned down.
+
+Against OBS 32.1.2 under the same harness (one 30 s run each, NVENC H.264
+p5 VBR 27 Mbps, so indicative only):
+
+| Recorder | Frames kept |
+|---|---|
+| OBS Game Capture (injects a hook into the game) | 100% |
+| playerstv (window capture, variable frame rate) | 97 to 98% |
+| OBS Window Capture (same Windows API as playerstv), OBS window open | 76% and 90% |
+| OBS Window Capture, OBS minimised to the tray | 60% |
+
+OBS writes a constant 60 fps, so each frame its Window Capture missed is a
+repeat in the clip.
+
+The A/V offset came from the two streams starting their clocks at different
+moments: video at the first captured frame, audio when its feeder finished
+opening WASAPI (up to about 100 ms later for one game's sound). Both now
+count from one wall-clock origin picked before ffmpeg starts.
+
 **playerstv is better on a metric** when the 95% interval of the difference
 (playerstv minus the other recorder) lies entirely on the better side of
 zero. If it straddles zero, the report says there's no measurable
