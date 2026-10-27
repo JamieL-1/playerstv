@@ -99,26 +99,23 @@ Still open: whether Windows shows all 60 frames on screen in that state
 (PresentMon would tell), and which capture method and frame timing
 playerstv should use.
 
-**Update, 2026-10-27** (one short round, 30 s measured, so indicative
-only). The loss had three causes:
+**Update, 2026-10-27** (short single rounds, so indicative only):
 
-- The fixed 60 fps output turned every late frame into a repeat. playerstv
-  now keeps each frame's capture time (variable frame rate), which took
-  repeats to 0% and dropped frames to 27%.
-- Windows Graphics Capture delivers only about 73% of the frames of a game
-  that fills its monitor and is the only window on it, as a game started
-  from a launcher is. This held at every capture setting, with or without
-  an encoder. With another window open (a console, for example) it
-  delivered about 90%, which made earlier tests look better than real use.
-  Desktop Duplication delivered all of them.
-- Desktop Duplication merges frames that arrive while the encoder is busy,
-  so slower presets lose more: about 75% kept with p5, 97% with p2, at the
-  same SSIM.
+- The fixed 60 fps output turned every frame that arrived late into a
+  repeat. playerstv now keeps each frame's capture time (variable frame
+  rate): repeats went to 0%, dropped frames to 27%.
+- The rest is lost in capture. Windows Graphics Capture delivered about
+  73% of the frames of a game that fills its monitor and is the only
+  window on it, as a game started from a launcher is, at every capture
+  setting and with no encoder at all. With another window open (a
+  console, for example) it delivered about 90%, which made some earlier
+  tests look better than real use.
+- Desktop Duplication delivered every frame, but records the whole
+  monitor, so it could catch other windows and notifications. playerstv
+  only ever records the game window, so it isn't used.
 
-So playerstv now duplicates the monitor, with preset p2, when the game
-fills it at native resolution, and captures the window as before
-otherwise. In the short run, dropped frames went to 6.4% and video encoder
-use from 52% to 25%.
+Still open: whether Windows itself drops those frames or ffmpeg's
+`gfxcapture` does (it keeps only two frame buffers).
 
 The A/V offset came from the two streams starting their clocks at different
 moments: video at the first captured frame, audio when its feeder finished

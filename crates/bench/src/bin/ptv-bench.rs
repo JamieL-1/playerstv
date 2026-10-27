@@ -291,8 +291,7 @@ fn options(c: &Common, recorder: Recorder, round: u32, out: &Path, environment: 
     let (width, height) = c.windowed.unwrap_or_else(window::primary_monitor_size);
     // The cap playerstv picks for High quality; others are set to match.
     let video = VideoConfig { fps: c.fps, ..Default::default() };
-    let bitrate_mbps =
-        ffmpeg_args::encode_plan(CaptureTarget { hwnd: 0, width, height, fullscreen_output: None }, &video).cap_mbps;
+    let bitrate_mbps = ffmpeg_args::encode_plan(CaptureTarget { hwnd: 0, width, height }, &video).cap_mbps;
     Ok(RunOptions {
         recorder,
         round,

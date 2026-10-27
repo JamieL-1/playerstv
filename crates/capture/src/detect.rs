@@ -1,13 +1,8 @@
 use std::collections::HashMap;
 
-use ptv_core::ffmpeg_args::CaptureTarget;
 use ptv_core::profile::{GameProfile, ProfileMatcher};
 use windows::core::{BOOL, PWSTR};
-use windows::Win32::Foundation::{CloseHandle, HWND, LPARAM, POINT, RECT};
-use windows::Win32::Graphics::Dxgi::{CreateDXGIFactory1, IDXGIFactory1};
-use windows::Win32::Graphics::Gdi::{
-    ClientToScreen, GetMonitorInfoW, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONULL,
-};
+use windows::Win32::Foundation::{CloseHandle, HWND, LPARAM, RECT};
 use windows::Win32::System::Threading::{
     OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
 };
@@ -129,59 +124,6 @@ pub fn exe_name(pid: u32) -> Option<String> {
 pub fn window_alive(hwnd: u64) -> bool {
     // SAFETY: IsWindow accepts any value, including stale handles.
     unsafe { IsWindow(Some(HWND(hwnd as *mut _))).as_bool() }
-}
-
-/// What to record for the window right now: its size, and whether it fills
-/// a monitor (see [`CaptureTarget::fullscreen_output`]).
-pub fn capture_target(hwnd: u64) -> CaptureTarget {
-    let (width, height) = client_size(hwnd);
-    CaptureTarget { hwnd, width, height, fullscreen_output: fullscreen_output(hwnd) }
-}
-
-/// The DXGI output index, on the default GPU, of the monitor whose area is
-/// exactly this window's client area: a game in borderless or exclusive
-/// fullscreen. `None` for anything else, including a monitor on another GPU,
-/// whose frames NVENC couldn't take.
-pub fn fullscreen_output(hwnd: u64) -> Option<u32> {
-    let hwnd = HWND(hwnd as *mut _);
-    // SAFETY: each call fails cleanly for a window that has closed; `client`,
-    // `origin` and `info` outlive the calls that fill them in, and `info`
-    // has its size set as GetMonitorInfoW requires.
-    let monitor = unsafe {
-        if IsIconic(hwnd).as_bool() {
-            return None;
-        }
-        let mut client = RECT::default();
-        GetClientRect(hwnd, &mut client).ok()?;
-        let mut origin = POINT::default();
-        if !ClientToScreen(hwnd, &mut origin).as_bool() {
-            return None;
-        }
-        let monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONULL);
-        let mut info = MONITORINFO { cbSize: size_of::<MONITORINFO>() as u32, ..Default::default() };
-        if monitor.is_invalid() || !GetMonitorInfoW(monitor, &mut info).as_bool() {
-            return None;
-        }
-        let m = info.rcMonitor;
-        let fills =
-            (origin.x, origin.y, client.right, client.bottom) == (m.left, m.top, m.right - m.left, m.bottom - m.top);
-        if !fills {
-            return None;
-        }
-        monitor
-    };
-    // Only asked once the window fills a monitor, so a windowed game's
-    // checks never get this far.
-    // SAFETY: plain COM calls on interfaces DXGI just returned; the adapter
-    // and outputs are released when they go out of scope.
-    unsafe {
-        let factory: IDXGIFactory1 = CreateDXGIFactory1().ok()?;
-        let adapter = factory.EnumAdapters1(0).ok()?;
-        (0..)
-            .map_while(|i| adapter.EnumOutputs(i).ok().map(|output| (i, output)))
-            .find(|(_, output)| output.GetDesc().is_ok_and(|d| d.Monitor == monitor))
-            .map(|(i, _)| i)
-    }
 }
 
 /// Client-area size, or `(0, 0)` while minimised.

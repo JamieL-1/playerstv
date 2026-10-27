@@ -75,7 +75,8 @@ impl Recorder {
             feeders.push(f);
         }
 
-        let target = detect::capture_target(window.hwnd);
+        let (width, height) = detect::client_size(window.hwnd);
+        let target = CaptureTarget { hwnd: window.hwnd, width, height };
         let video_summary = ffmpeg_args::describe(&ffmpeg_args::encode_plan(target, &cfg.video), &cfg.video);
         let spec = RecordSpec {
             target,
