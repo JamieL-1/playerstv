@@ -523,9 +523,10 @@ fn matchers(cfg: &Config) -> Vec<ProfileMatcher> {
 }
 
 /// True once the window has settled at a size that would encode to a
-/// different frame size than the running encoder's. gfxcapture fixes its
-/// output size at start, so without a restart a game that changes size after
-/// launch (RuneLite opening its sidebar, say) ends up letterboxed.
+/// different frame size, or need a different crop, than the running
+/// encoder's. gfxcapture fixes both at start, so without a restart a game
+/// that changes size after launch (RuneLite opening its sidebar, say) ends up
+/// letterboxed or resampled.
 fn window_resized(active: &mut Active) -> bool {
     let Some(rec) = &active.recorder else {
         active.pending_resize = None;
@@ -549,7 +550,8 @@ fn resize_settled(
     // Minimised (0×0) isn't a new size: the window comes back as it was.
     if size.0 == 0
         || size.1 == 0
-        || ffmpeg_args::encoded_size(target, video) == ffmpeg_args::encoded_size(encoding, video)
+        || (ffmpeg_args::encoded_size(target, video), ffmpeg_args::capture_crop(target))
+            == (ffmpeg_args::encoded_size(encoding, video), ffmpeg_args::capture_crop(encoding))
     {
         *pending = None;
         return false;
@@ -774,8 +776,9 @@ mod tests {
         assert_eq!(first_restart(&v, &[(0, 0); 4]), None);
         // Minimising mid-change starts the wait over.
         assert_eq!(first_restart(&v, &[(1900, 1030), (0, 0), (1900, 1030), (1900, 1030), (1900, 1030)]), Some(4));
-        // Native rounds to even, so an odd extra pixel encodes the same.
-        assert_eq!(first_restart(&v, &[(1659, 1031); 4]), None);
+        // An odd extra pixel encodes to the same size but needs cropping, or
+        // gfxcapture would resample the frame to fit.
+        assert_eq!(first_restart(&v, &[(1659, 1031); 4]), Some(2));
         // A fixed height with the same aspect ratio encodes the same.
         let p1080 = VideoConfig { resolution: Resolution::P1080, ..Default::default() };
         assert_eq!(first_restart(&p1080, &[(3316, 2060); 4]), None);

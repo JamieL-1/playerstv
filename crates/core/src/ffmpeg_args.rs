@@ -105,8 +105,26 @@ fn mix_graph(audio: &[AudioInput]) -> String {
     g
 }
 
-/// Output frame size as `(width, height)` gfxcapture options. Negative values
-/// tell gfxcapture to round the native size down to a multiple of 2.
+/// Pixels to crop off the right and bottom of the window as `(right, bottom)`
+/// so its size is even, as the encoder needs. Asking gfxcapture to round an
+/// odd size down instead resamples the whole frame by a pixel, which blurred
+/// every native RuneLite recording (a 1901×1031 window).
+pub fn capture_crop(target: CaptureTarget) -> (u32, u32) {
+    if target.width > 0 && target.height > 0 {
+        (target.width % 2, target.height % 2)
+    } else {
+        (0, 0)
+    }
+}
+
+/// NVENC turns RGB frames into limited-range BT.601 video, but ffmpeg labels
+/// the result with the capture's full-range RGB, so players that trust the
+/// label showed washed-out colour. Correct the label before encoding.
+const COLOR_TAGS: &str = "setparams=colorspace=bt470bg:range=tv";
+
+/// Output frame size as `(width, height)` gfxcapture options, applied after
+/// [`capture_crop`]. Negative values tell gfxcapture to round the native size
+/// down to a multiple of 2.
 pub fn output_size(target: CaptureTarget, video: &VideoConfig) -> (i64, i64) {
     let known = target.width > 0 && target.height > 0;
     let max = video.codec.max_dimension();
@@ -212,8 +230,9 @@ pub fn record_args(spec: &RecordSpec) -> Vec<String> {
     // Point sampling keeps 2× pixel-perfect; bicubic beats the default
     // bilinear for every other rescale.
     let scale_mode = if v.resolution == Resolution::Double { "point" } else { "bicubic" };
+    let (crop_right, crop_bottom) = capture_crop(spec.target);
     let mut graph = format!(
-        "gfxcapture=hwnd={hwnd}:max_framerate={rate}:resize_mode=scale_aspect:scale_mode={scale_mode}:width={w}:height={h}:capture_cursor=1",
+        "gfxcapture=hwnd={hwnd}:max_framerate={rate}:crop_right={crop_right}:crop_bottom={crop_bottom}:resize_mode=scale_aspect:scale_mode={scale_mode}:width={w}:height={h}:capture_cursor=1",
         hwnd = spec.target.hwnd,
         rate = v.fps * CAPTURE_HEADROOM,
     );
@@ -223,6 +242,8 @@ pub fn record_args(spec: &RecordSpec) -> Vec<String> {
     }
     graph.push(',');
     graph.push_str(&pace_filter(v.fps));
+    graph.push(',');
+    graph.push_str(COLOR_TAGS);
     graph.push_str("[v]");
     push(&["-filter_complex", &graph]);
     // The mix gets a graph of its own. In one graph, ffmpeg only runs the
@@ -371,9 +392,10 @@ mod tests {
         // Capture at twice the rate, timed on the audio's clock, then paced
         // down to 120 fps.
         assert!(s.contains(
-            "gfxcapture=hwnd=4660:max_framerate=240:resize_mode=scale_aspect:scale_mode=bicubic:width=-2:height=-2:capture_cursor=1,\
+            "gfxcapture=hwnd=4660:max_framerate=240:crop_right=0:crop_bottom=0:resize_mode=scale_aspect:scale_mode=bicubic:width=-2:height=-2:capture_cursor=1,\
              setpts='PTS+if(eq(N,0),st(0,(RTCTIME-1793000000000000)/1000000),ld(0))/TB',\
-             select='st(0,if(n,min(2,ld(0)+(t-ld(1))*120),1));st(1,t);if(gte(ld(0),0.75),st(0,ld(0)-1)*0+1,0)'[v]"
+             select='st(0,if(n,min(2,ld(0)+(t-ld(1))*120),1));st(1,t);if(gte(ld(0),0.75),st(0,ld(0)-1)*0+1,0)',\
+             setparams=colorspace=bt470bg:range=tv[v]"
         ));
         assert!(s.contains(
             "[v] -filter_complex [0:a]volume=1.50[m0];[1:a]volume=0.80[m1];[m0][m1]amix=inputs=2:normalize=0:dropout_transition=0,alimiter=limit=0.97:level=false[mix]"
@@ -411,7 +433,7 @@ mod tests {
         assert_eq!(output_size(t, &v), (3800, 2060));
         let dir = PathBuf::from("buf");
         let s = record_args(&RecordSpec {
-            target: target(),
+            target: t,
             video: &v,
             audio: &[],
             mixed_track: true,
@@ -421,7 +443,22 @@ mod tests {
             audio_origin_unix_us: 0,
         })
         .join(" ");
-        assert!(s.contains("scale_mode=point:width=3800:height=2060"));
+        // The odd pixel is cropped, so doubling is exact rather than 1901→3800.
+        assert!(
+            s.contains("crop_right=1:crop_bottom=1:resize_mode=scale_aspect:scale_mode=point:width=3800:height=2060")
+        );
+    }
+
+    #[test]
+    fn odd_native_window_is_cropped_not_resampled() {
+        let odd = CaptureTarget { width: 1901, height: 1031, ..target() };
+        assert_eq!(capture_crop(odd), (1, 1));
+        assert_eq!(capture_crop(target()), (0, 0));
+        assert_eq!(capture_crop(CaptureTarget { width: 0, height: 0, ..target() }), (0, 0));
+        // Native still lets gfxcapture size itself, which after the crop is
+        // the window's exact even size.
+        assert_eq!(output_size(odd, &VideoConfig::default()), (-2, -2));
+        assert_eq!(encoded_size(odd, &VideoConfig::default()), (1900, 1030));
     }
 
     #[test]
