@@ -26,6 +26,15 @@ pub enum Status {
         /// fewer frames, or capture falling behind.
         #[serde(default)]
         low_fps: Option<u32>,
+        /// Whether this game keeps a replay buffer. False while a full
+        /// session records a game with the buffer off: no clipping then.
+        #[serde(default = "yes")]
+        replay_buffer: bool,
+    },
+    /// Game found, but its replay buffer is off and no full session is
+    /// recording, so nothing is being encoded or written.
+    Idle {
+        game: String,
     },
     /// Game found but the encoder keeps failing.
     Failing {
@@ -53,6 +62,21 @@ impl Status {
     pub fn is_recording(&self) -> bool {
         matches!(self, Status::Recording { .. })
     }
+
+    /// A clip can be saved: recording, with a replay buffer.
+    pub fn can_clip(&self) -> bool {
+        matches!(self, Status::Recording { replay_buffer: true, .. })
+    }
+
+    /// A full session can be started or stopped: recording, or a game found
+    /// with its replay buffer off.
+    pub fn can_toggle_session(&self) -> bool {
+        matches!(self, Status::Recording { .. } | Status::Idle { .. })
+    }
+}
+
+fn yes() -> bool {
+    true
 }
 
 pub fn unix_now() -> u64 {

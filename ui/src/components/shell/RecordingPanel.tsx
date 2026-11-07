@@ -30,6 +30,9 @@ export function RecordingPanel({ snapshot }: { snapshot: Snapshot | null | undef
   const s = snapshot.status;
   const recording = s.state === "recording";
   const session = recording ? s.session_since : null;
+  // Older trays don't send replay_buffer: they always had one.
+  const canClip = recording && s.replay_buffer !== false;
+  const canToggleSession = recording || s.state === "idle";
 
   let dot = "bg-muted-foreground";
   let titleClass = "";
@@ -40,6 +43,9 @@ export function RecordingPanel({ snapshot }: { snapshot: Snapshot | null | undef
     titleClass = "text-red-400";
     title = `REC ${formatElapsed(now - session)}`;
     subtitle = `${s.game} · full session`;
+  } else if (s.state === "idle") {
+    title = "Replay buffer off";
+    subtitle = `${s.game} · not recording`;
   } else if (s.state === "recording") {
     const ready = Math.min(now - s.since, snapshot.buffer_seconds);
     dot = "bg-green-500";
@@ -71,8 +77,12 @@ export function RecordingPanel({ snapshot }: { snapshot: Snapshot | null | undef
       }
     >
       <IconButton
-        label={`Save last ${snapshot.buffer_seconds}s (${snapshot.clip_hotkey})`}
-        disabled={!recording}
+        label={
+          recording && !canClip
+            ? "Replay buffer is off for this game"
+            : `Save last ${snapshot.buffer_seconds}s (${snapshot.clip_hotkey})`
+        }
+        disabled={!canClip}
         onClick={() => run(backend.saveClip(), "Saving clip…")}
       >
         <Scissors />
@@ -83,7 +93,7 @@ export function RecordingPanel({ snapshot }: { snapshot: Snapshot | null | undef
             ? `Stop & save session (${snapshot.session_hotkey})`
             : `Record full session (${snapshot.session_hotkey})`
         }
-        disabled={!recording}
+        disabled={!canToggleSession}
         destructive={session !== null}
         onClick={() => run(backend.toggleSession(), session !== null ? "Saving session…" : "Recording full session")}
       >

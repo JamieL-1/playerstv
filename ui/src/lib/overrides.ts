@@ -20,6 +20,7 @@ function pick<T extends object>(o: T | undefined, keys: readonly (keyof T)[]): T
 export function pruneOverrides(o: GameOverrides | undefined): GameOverrides | undefined {
   if (!o) return undefined;
   const out: GameOverrides = {};
+  if (o.replay_buffer !== undefined && o.replay_buffer !== null) out.replay_buffer = o.replay_buffer;
   if (o.record_full_session !== undefined && o.record_full_session !== null)
     out.record_full_session = o.record_full_session;
   if (o.buffer_seconds !== undefined && o.buffer_seconds !== null) out.buffer_seconds = o.buffer_seconds;
@@ -48,6 +49,7 @@ export function effectiveSettings(config: Config, game: GameProfile) {
   const o = game.overrides ?? {};
   const { bitrate_cap, ...video } = o.video ?? {};
   return {
+    replay_buffer: o.replay_buffer ?? config.replay_buffer,
     record_full_session: o.record_full_session ?? config.record_full_session,
     buffer_seconds: o.buffer_seconds ?? config.buffer_seconds,
     video: {
@@ -72,6 +74,7 @@ const QUALITY_SHORT = { low: "Low", medium: "Medium", high: "High", very_high: "
 export function overrideSummary(o: GameOverrides | undefined): string {
   if (!o) return "";
   const parts: string[] = [];
+  if (o.replay_buffer !== undefined) parts.push(o.replay_buffer ? "Replay buffer on" : "Replay buffer off");
   if (o.record_full_session !== undefined) parts.push(o.record_full_session ? "Full session" : "Clips only");
   if (o.buffer_seconds !== undefined) parts.push(`${formatBuffer(o.buffer_seconds)} buffer`);
   const v = o.video ?? {};

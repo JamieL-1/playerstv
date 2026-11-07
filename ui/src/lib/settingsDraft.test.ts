@@ -3,6 +3,7 @@ import type { Config } from "@/api/types";
 import { isDirty, mergeExternalChange, restoreDefaults } from "./settingsDraft";
 
 const base: Config = {
+  replay_buffer: true,
   buffer_seconds: 30,
   clip_hotkey: "Alt+F10",
   session_hotkey: "Alt+F9",

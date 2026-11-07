@@ -349,6 +349,8 @@ impl AudioOverrides {
 #[serde(default)]
 pub struct GameOverrides {
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub replay_buffer: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub record_full_session: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub buffer_seconds: Option<u32>,
@@ -474,6 +476,10 @@ pub const AUDIO_BITRATE_KBPS: std::ops::RangeInclusive<u32> = 64..=320;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
+    /// Keep a replay buffer running while a game is open, so clips can be
+    /// saved. Off means nothing is written to disk unless a full session is
+    /// recording (and clipping is unavailable).
+    pub replay_buffer: bool,
     /// Seconds of gameplay kept in the replay buffer / saved per clip.
     pub buffer_seconds: u32,
     /// Global hotkey, e.g. "Alt+F10".
@@ -508,6 +514,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
+            replay_buffer: true,
             buffer_seconds: 30,
             clip_hotkey: "Alt+F10".into(),
             session_hotkey: "Alt+F9".into(),
@@ -589,6 +596,7 @@ impl Config {
     pub fn for_game(&self, id: &str) -> Config {
         let mut cfg = self.clone();
         let Some(o) = self.games.iter().find(|g| g.id == id).map(|g| &g.overrides) else { return cfg };
+        cfg.replay_buffer = o.replay_buffer.unwrap_or(cfg.replay_buffer);
         cfg.record_full_session = o.record_full_session.unwrap_or(cfg.record_full_session);
         cfg.buffer_seconds = o.buffer_seconds.map_or(cfg.buffer_seconds, clamp_buffer_seconds);
         o.video.apply(&mut cfg.video);
@@ -648,6 +656,8 @@ mod tests {
         assert!(cfg.auto_update);
         // ...and ask what the close button should do.
         assert_eq!(cfg.close_action, CloseAction::Ask);
+        // Configs from before the replay buffer could be turned off keep it on.
+        assert!(cfg.replay_buffer);
     }
 
     #[test]
@@ -756,6 +766,7 @@ mod tests {
     fn overrides_round_trip() {
         let mut cfg = Config::default();
         let o = game_mut(&mut cfg, profile::LEAGUE);
+        o.replay_buffer = Some(false);
         o.record_full_session = Some(true);
         o.video.fps = Some(120);
         o.video.bitrate_cap = Some(BitrateCap::Mbps(80));
@@ -792,6 +803,7 @@ mod tests {
 
         let league = cfg.for_game(profile::LEAGUE);
         assert!(league.record_full_session);
+        assert!(league.replay_buffer, "not overridden: global");
         assert_eq!(league.buffer_seconds, 45, "not overridden: global");
         assert_eq!(league.video.fps, 120);
         assert_eq!(league.video.codec, cfg.video.codec);
@@ -829,5 +841,21 @@ mod tests {
         let changed = |id| new.for_game(id).capture_changed(&old.for_game(id));
         assert!(changed(profile::CS2));
         assert!(!changed(profile::LEAGUE), "another game's settings don't split this recording");
+    }
+
+    #[test]
+    fn replay_buffer_layers_both_ways() {
+        // Off globally, back on for one game.
+        let mut cfg = Config { replay_buffer: false, ..Default::default() };
+        game_mut(&mut cfg, profile::CS2).replay_buffer = Some(true);
+        assert!(cfg.for_game(profile::CS2).replay_buffer);
+        assert!(!cfg.for_game(profile::LEAGUE).replay_buffer);
+        // On globally, off for one game.
+        let mut cfg = Config::default();
+        game_mut(&mut cfg, profile::RUNELITE).replay_buffer = Some(false);
+        assert!(!cfg.for_game(profile::RUNELITE).replay_buffer);
+        assert!(cfg.for_game(profile::CS2).replay_buffer);
+        // Turning it off isn't a capture change: the supervisor handles it.
+        assert!(!cfg.for_game(profile::RUNELITE).capture_changed(&Config::default()));
     }
 }
