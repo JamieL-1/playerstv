@@ -2,7 +2,7 @@ import { LIMITS } from "@/api/types";
 import { Slider } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
 import { HotkeyRecorder, SectionTitle, SettingRow } from "./controls";
-import { OVERRIDE_NOTE } from "./options";
+import { BUFFER_DESCRIPTION, OVERRIDE_NOTE } from "./options";
 import { useSettings } from "./SettingsContext";
 
 export function RecordingSection() {
@@ -11,14 +11,19 @@ export function RecordingSection() {
   return (
     <>
       <SectionTitle title="Recording" description={`What gets recorded. ${OVERRIDE_NOTE}`} />
+      <SettingRow label="Replay buffer" description={BUFFER_DESCRIPTION}>
+        <Switch checked={draft.replay_buffer} onCheckedChange={(v) => update((c) => ({ ...c, replay_buffer: v }))} />
+      </SettingRow>
       <SettingRow
         label="Replay buffer length"
         description="How much recent gameplay playerstv keeps. A clip saves all of it."
         stacked
+        disabled={!draft.replay_buffer}
       >
         <div className="flex items-center gap-4">
           <Slider
             className="flex-1"
+            disabled={!draft.replay_buffer}
             min={min}
             max={max}
             step={5}
@@ -30,7 +35,11 @@ export function RecordingSection() {
       </SettingRow>
       <SettingRow
         label="Record the whole session automatically"
-        description="Saves everything from when the game opens until it closes, on top of the replay buffer."
+        description={
+          draft.replay_buffer
+            ? "Saves everything from when the game opens until it closes, on top of the replay buffer."
+            : "Saves everything from when the game opens until it closes."
+        }
       >
         <Switch
           checked={draft.record_full_session}

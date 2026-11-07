@@ -18,7 +18,7 @@ import { useGameIcons } from "@/hooks/useGameIcons";
 import { effectiveSettings, formatBuffer, updateOverrides } from "@/lib/overrides";
 import { GroupLabel, Hint, SettingRow } from "./controls";
 import { GameBadge } from "./GamesSection";
-import { CODECS, labelOf, QUALITIES, RESOLUTIONS, usePlayableCodecs } from "./options";
+import { BUFFER_DESCRIPTION, CODECS, labelOf, QUALITIES, RESOLUTIONS, usePlayableCodecs } from "./options";
 import { useSettings } from "./SettingsContext";
 
 const DEFAULT = "__default__";
@@ -30,9 +30,10 @@ const ON_OFF: { value: "on" | "off"; label: string }[] = [
 const toOnOff = (b: boolean | undefined) => (b === undefined ? undefined : b ? "on" : "off");
 const fromOnOff = (s: "on" | "off" | undefined) => (s === undefined ? undefined : s === "on");
 
-const MODES: { value: "session" | "clips"; label: string }[] = [
-  { value: "clips", label: "Clips only" },
-  { value: "session", label: "Clips + full session" },
+/** With the replay buffer off there are no clips, so "clips" means nothing records automatically. */
+const modes = (buffer: boolean): { value: "session" | "clips"; label: string }[] => [
+  { value: "clips", label: buffer ? "Clips only" : "Only with the session hotkey" },
+  { value: "session", label: buffer ? "Clips + full session" : "Full session" },
 ];
 
 const SOURCES: { value: AudioSourceKind; label: string }[] = [
@@ -82,14 +83,22 @@ export function GameSettingsPage() {
       </div>
 
       <GroupLabel>Recording</GroupLabel>
+      <SettingRow label="Replay buffer" description={BUFFER_DESCRIPTION}>
+        <DefaultSelect
+          value={toOnOff(o.replay_buffer)}
+          options={ON_OFF}
+          defaultLabel={onOff(g.replay_buffer)}
+          onChange={(s) => edit((x) => ({ ...x, replay_buffer: fromOnOff(s) }))}
+        />
+      </SettingRow>
       <SettingRow
         label="Recording mode"
         description="A full session saves everything from when the game opens until it closes."
       >
         <DefaultSelect
           value={o.record_full_session === undefined ? undefined : o.record_full_session ? "session" : "clips"}
-          options={MODES}
-          defaultLabel={labelOf(MODES, g.record_full_session ? "session" : "clips")}
+          options={modes(eff.replay_buffer)}
+          defaultLabel={labelOf(modes(eff.replay_buffer), g.record_full_session ? "session" : "clips")}
           onChange={(m) => edit((x) => ({ ...x, record_full_session: m === undefined ? undefined : m === "session" }))}
         />
       </SettingRow>
@@ -102,6 +111,7 @@ export function GameSettingsPage() {
         step={5}
         format={(s) => `${s} s`}
         defaultFormat={formatBuffer}
+        disabled={!eff.replay_buffer}
         onChange={(s) => edit((x) => ({ ...x, buffer_seconds: s }))}
       />
 
@@ -271,24 +281,33 @@ function DefaultSliderRow(props: {
   step: number;
   format: (n: number) => string;
   defaultFormat?: (n: number) => string;
+  disabled?: boolean;
   onChange: (value: number | undefined) => void;
 }) {
   const custom = props.value !== undefined;
   const switchLabel = (
     <label className="flex items-center gap-2 text-sm text-muted-foreground">
       Custom
-      <Switch checked={custom} onCheckedChange={(on) => props.onChange(on ? props.global : undefined)} />
+      <Switch
+        checked={custom}
+        disabled={props.disabled}
+        onCheckedChange={(on) => props.onChange(on ? props.global : undefined)}
+      />
     </label>
   );
   if (props.value === undefined) {
     return (
-      <SettingRow label={props.label} description={`Default (${(props.defaultFormat ?? props.format)(props.global)})`}>
+      <SettingRow
+        label={props.label}
+        description={`Default (${(props.defaultFormat ?? props.format)(props.global)})`}
+        disabled={props.disabled}
+      >
         {switchLabel}
       </SettingRow>
     );
   }
   return (
-    <SettingRow label={props.label} stacked>
+    <SettingRow label={props.label} stacked disabled={props.disabled}>
       <div className="flex items-center gap-4">
         <SliderWithValue {...props} value={props.value} />
         {switchLabel}
@@ -303,12 +322,14 @@ function SliderWithValue(props: {
   max: number;
   step: number;
   format: (n: number) => string;
+  disabled?: boolean;
   onChange: (value: number) => void;
 }) {
   return (
     <div className="flex flex-1 items-center gap-4">
       <Slider
         className="flex-1"
+        disabled={props.disabled}
         min={props.min}
         max={props.max}
         step={props.step}

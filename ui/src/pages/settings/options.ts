@@ -39,3 +39,6 @@ export function usePlayableCodecs(): Set<Codec> {
 
 /** Under the global Recording/Video/Audio sections. */
 export const OVERRIDE_NOTE = "Games can have their own settings: Games → Customize.";
+
+export const BUFFER_DESCRIPTION =
+  "Keeps recent gameplay ready to clip, writing to your drive the whole time a game is open. Off: no clips, but full sessions still record.";

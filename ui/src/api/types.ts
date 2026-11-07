@@ -49,6 +49,7 @@ export interface AudioOverrides {
 }
 
 export interface GameOverrides {
+  replay_buffer?: boolean;
   record_full_session?: boolean;
   buffer_seconds?: number;
   video?: VideoOverrides;
@@ -81,6 +82,8 @@ export interface UiConfig {
 export type CloseAction = "ask" | "tray" | "quit";
 
 export interface Config {
+  /** Off: nothing is written while a game runs unless a full session records; no clips. */
+  replay_buffer: boolean;
   buffer_seconds: number;
   clip_hotkey: string;
   session_hotkey: string;
@@ -109,7 +112,11 @@ export type Status =
       buffer_seconds: number;
       /** Frames per second actually captured, when well below the target while the game had focus. */
       low_fps?: number | null;
+      /** False while a full session records a game whose replay buffer is off: no clipping. */
+      replay_buffer?: boolean;
     }
+  /** Game found, replay buffer off, no full session: nothing is being recorded. */
+  | { state: "idle"; game: string }
   | { state: "failing"; game: string; error: string };
 
 /** What the tray reports; `null` when the tray app isn't running. */

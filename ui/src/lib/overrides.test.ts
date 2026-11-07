@@ -4,6 +4,7 @@ import { effectiveSettings, overrideSummary, pruneOverrides, updateOverrides } f
 import { isDirty } from "./settingsDraft";
 
 const base: Config = {
+  replay_buffer: true,
   buffer_seconds: 30,
   clip_hotkey: "Alt+F10",
   session_hotkey: "Alt+F9",
@@ -73,6 +74,22 @@ describe("overrides", () => {
     expect(auto.video.bitrate_cap_mbps).toBeNull();
   });
 
+  it("turns the replay buffer off per game, or back on", () => {
+    expect(effectiveSettings(base, base.games[0]!).replay_buffer).toBe(true);
+    const off = updateOverrides(base, "runelite", (o) => ({ ...o, replay_buffer: false }));
+    expect(off.games[0]!.overrides).toEqual({ replay_buffer: false });
+    expect(effectiveSettings(off, off.games[0]!).replay_buffer).toBe(false);
+    const globalOff = { ...base, replay_buffer: false };
+    expect(effectiveSettings(globalOff, globalOff.games[0]!).replay_buffer).toBe(false);
+    const on = { ...base.games[0]!, overrides: { replay_buffer: true } };
+    expect(effectiveSettings(globalOff, on).replay_buffer).toBe(true);
+    // Backend key order: replay_buffer first.
+    expect(Object.keys(pruneOverrides({ record_full_session: true, replay_buffer: false })!)).toEqual([
+      "replay_buffer",
+      "record_full_session",
+    ]);
+  });
+
   it("summarises what's customised", () => {
     expect(overrideSummary(undefined)).toBe("");
     expect(overrideSummary({ record_full_session: true, video: { fps: 120 }, audio: { source: "desktop" } })).toBe(
@@ -80,6 +97,9 @@ describe("overrides", () => {
     );
     expect(overrideSummary({ buffer_seconds: 120, audio: { game_audio: false, mic: false } })).toBe(
       "2 min buffer · No computer audio · No mic",
+    );
+    expect(overrideSummary({ replay_buffer: false, record_full_session: true })).toBe(
+      "Replay buffer off · Full session",
     );
   });
 });

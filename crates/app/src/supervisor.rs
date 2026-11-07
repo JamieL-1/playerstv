@@ -172,7 +172,8 @@ impl Supervisor {
                         active.recorder.take().expect("checked above").stop();
                     }
                 }
-                if active.recorder.is_none() && Instant::now() >= active.retry_at {
+                let wants_encoder = wants_encoder(&active);
+                if active.recorder.is_none() && wants_encoder && Instant::now() >= active.retry_at {
                     self.restart_recorder(&mut active);
                 } else if window_resized(&mut active) {
                     tracing::info!("{} window resized, restarting encoder", active.window.profile.name);
@@ -181,7 +182,12 @@ impl Supervisor {
                 }
                 watch_frame_rate(&mut active);
                 if self.exports_in_flight.load(Ordering::SeqCst) == 0 {
-                    prune(&active.dir, active.settings.buffer_seconds, active.session_from);
+                    if wants_encoder || active.recorder.is_some() {
+                        prune(&active.dir, active.settings.buffer_seconds, active.session_from);
+                    } else {
+                        // Buffer off and idle: nothing to keep once saves are done.
+                        clear_segments(&active.dir);
+                    }
                 }
                 self.active = Some(active);
             }
@@ -245,9 +251,12 @@ impl Supervisor {
             low_fps: None,
             detected: Instant::now(),
         };
-        start_recorder(&self.ffmpeg, &mut active);
         if active.settings.record_full_session {
-            begin_session(&mut active);
+            start_session(&self.ffmpeg, &mut active);
+        } else if active.settings.replay_buffer {
+            start_recorder(&self.ffmpeg, &mut active);
+        } else {
+            tracing::info!("{} replay buffer is off, idle until a full session starts", active.window.profile.name);
         }
         self.active = Some(active);
     }
@@ -297,13 +306,22 @@ impl Supervisor {
         let restart = settings.capture_changed(&active.settings);
         let session_turned_on = settings.record_full_session && !active.settings.record_full_session;
         active.settings = settings;
-        if restart {
+        if !wants_encoder(&active) {
+            // Buffer turned off with no session recording: stop writing now.
+            if let Some(rec) = active.recorder.take() {
+                tracing::info!("{} replay buffer turned off, stopping encoder", active.window.profile.name);
+                rec.stop();
+            }
+            active.last_error = None;
+            active.failures = 0;
+        } else if restart {
             tracing::info!("capture settings changed, restarting encoder");
             active.failures = 0;
             self.restart_recorder(&mut active);
         }
+        // Turned back on: the next tick starts the encoder.
         if session_turned_on && active.session_from.is_none() {
-            begin_session(&mut active);
+            start_session(&self.ffmpeg, &mut active);
         }
         self.active = Some(active);
     }
@@ -313,6 +331,12 @@ impl Supervisor {
             self.emit(Event::Error("No game running, so there's nothing to clip.".into()));
             return;
         };
+        if !active.settings.replay_buffer {
+            let game = &active.window.profile.name;
+            return self.emit(Event::Error(format!(
+                "The replay buffer is off for {game}, so there's nothing to clip. Turn it on in the game's settings."
+            )));
+        }
         let latest = match ring::scan(&active.dir) {
             Ok(s) => s.last().map(|s| s.index),
             Err(e) => return self.emit(Event::Error(format!("Reading buffer failed: {e}"))),
@@ -337,9 +361,18 @@ impl Supervisor {
             return;
         };
         if active.session_from.is_some() {
+            if !active.settings.replay_buffer {
+                // Nothing else needs the encoder: stop it first so the
+                // session's last segment is complete, like a closing game.
+                if let Some(rec) = active.recorder.take() {
+                    rec.stop();
+                }
+                active.last_error = None;
+                active.failures = 0;
+            }
             self.finish_session(&mut active, false);
         } else {
-            begin_session(&mut active);
+            start_session(&self.ffmpeg, &mut active);
         }
         self.active = Some(active);
         self.publish_status();
@@ -447,6 +480,9 @@ impl Supervisor {
     fn status(&self) -> Status {
         match &self.active {
             None => Status::Waiting,
+            Some(a) if a.recorder.is_none() && !wants_encoder(a) => {
+                Status::Idle { game: a.window.profile.name.clone() }
+            }
             Some(a) => match (&a.recorder, &a.last_error) {
                 (None, Some(err)) => Status::Failing { game: a.window.profile.name.clone(), error: err.clone() },
                 _ => Status::Recording {
@@ -456,6 +492,7 @@ impl Supervisor {
                     video: a.recorder.as_ref().map(|r| r.video_summary.clone()).unwrap_or_default(),
                     buffer_seconds: a.settings.buffer_seconds,
                     low_fps: a.low_fps,
+                    replay_buffer: a.settings.replay_buffer,
                 },
             },
         }
@@ -630,6 +667,21 @@ fn drop_session(active: &mut Active) {
     let _ = std::fs::remove_file(active.dir.join(SESSION_FILE));
 }
 
+/// Whether this game needs an encoder running: for its replay buffer, or for
+/// a full session in progress.
+fn wants_encoder(active: &Active) -> bool {
+    active.settings.replay_buffer || active.session_from.is_some()
+}
+
+/// Starts a full session, starting the encoder first if the game was idle
+/// (replay buffer off), so the session begins at that encoder's first segment.
+fn start_session(ffmpeg: &Path, active: &mut Active) {
+    if active.recorder.is_none() {
+        start_recorder(ffmpeg, active);
+    }
+    begin_session(active);
+}
+
 fn begin_session(active: &mut Active) {
     // Include the segment being written right now, but nothing from an
     // earlier encoder (a just-restarted one may not have written a file yet).
@@ -710,6 +762,15 @@ fn prune(dir: &Path, buffer_seconds: u32, keep_from: Option<u64>) {
     let Ok(segs) = ring::scan(dir) else { return };
     for seg in ring::prunable(&segs, buffer_seconds, keep_from) {
         // The segment ffmpeg holds open can't be deleted; we'll retry next tick.
+        let _ = std::fs::remove_file(&seg.path);
+    }
+}
+
+/// Deletes every segment, for a game whose replay buffer is off once
+/// nothing needs its footage any more.
+fn clear_segments(dir: &Path) {
+    let Ok(segs) = ring::scan(dir) else { return };
+    for seg in segs {
         let _ = std::fs::remove_file(&seg.path);
     }
 }

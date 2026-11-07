@@ -9,6 +9,9 @@ Supported games are Old School RuneScape (RuneLite), League of Legends
 - `Alt+F10` saves the last 30 s. The length is configurable from 5 to 600 s.
 - `Alt+F9` starts or stops recording the whole session. A session in progress
   survives a crash.
+- The replay buffer can be turned off, globally or per game, so nothing is
+  written to disk while you play. You lose clipping, but full sessions
+  still record.
 - Frames stay on the GPU from capture to the NVENC encoder (H.264, HEVC or
   AV1), up to 4K at 120 fps.
 - Audio is the game alone or all desktop audio, plus your mic. Track 1 mixes

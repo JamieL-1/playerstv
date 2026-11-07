@@ -659,6 +659,7 @@ pub fn status_line(status: &Status, buffer_seconds: u32) -> String {
                 format!("Replay buffer on · {game} ({ready}s of {buffer_seconds}s ready)")
             }
         }
+        Status::Idle { game } => format!("Replay buffer off · {game} (not recording)"),
         Status::Failing { game, .. } => format!("{game}: encoder error (see log)"),
     };
     match status {
@@ -672,13 +673,13 @@ fn update_labels(items: &Items, cfg: &Config, status: &Status) {
     let buffer_seconds = status.buffer_seconds_or(cfg.buffer_seconds);
     items.status.set_text(status_line(status, buffer_seconds));
     items.clip.set_text(format!("Save last {buffer_seconds}s{}", hk(&cfg.clip_hotkey)));
-    items.clip.set_enabled(status.is_recording());
+    items.clip.set_enabled(status.can_clip());
     let label = match status.session_since() {
         Some(t) => format!("■ Stop && save session ({})", format_elapsed(unix_now().saturating_sub(t))),
         None => "● Start full-session recording".to_owned(),
     };
     items.session.set_text(format!("{label}{}", hk(&cfg.session_hotkey)));
-    items.session.set_enabled(status.is_recording());
+    items.session.set_enabled(status.can_toggle_session());
 }
 
 fn tooltip(status: &Status, cfg: &Config) -> String {
@@ -689,7 +690,7 @@ fn tooltip(status: &Status, cfg: &Config) -> String {
 /// amber = error. Drawn at runtime so there are no asset files.
 fn status_icon(status: &Status) -> Icon {
     let (r, g, b) = match status {
-        Status::Waiting => (140, 140, 140),
+        Status::Waiting | Status::Idle { .. } => (140, 140, 140),
         Status::Recording { session_since: None, .. } => (40, 190, 90),
         Status::Recording { session_since: Some(_), .. } => (225, 45, 45),
         Status::Failing { .. } => (240, 170, 30),
