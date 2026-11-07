@@ -30,7 +30,7 @@ webview2-com = "0.39.1"
 global-hotkey = "0.9.0"
 notify = "8.2.0"
 png = "0.18.1"
-base64 = "0.22.1"
+base64 = "0.23.1"
 winreg = "0.56.0"
 
 [features]
