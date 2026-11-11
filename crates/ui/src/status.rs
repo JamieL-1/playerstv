@@ -2,6 +2,7 @@
 //! `status` event (a `Snapshot`, or `null` while the tray isn't running).
 
 use std::os::windows::process::CommandExt;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use ptv_common::control::{self, Request, Snapshot};
@@ -11,6 +12,14 @@ use ptv_core::config::{CloseAction, Config};
 use tauri::{AppHandle, Emitter};
 
 const POLL: Duration = Duration::from_millis(500);
+
+static RECORDING: AtomicBool = AtomicBool::new(false);
+
+/// Whether the tray was recording a game at the last poll, for background
+/// work in this process that should keep out of a game's way.
+pub fn recording() -> bool {
+    RECORDING.load(Ordering::Relaxed)
+}
 
 /// Polls the tray for the life of the app and emits each change. Polling
 /// carries on even when nothing changes: the tray treats it as the window's
@@ -22,6 +31,7 @@ pub fn start_poller(app: AppHandle) {
             let mut last = None;
             loop {
                 let snapshot = control::request(Request::Status).ok();
+                RECORDING.store(snapshot.as_ref().is_some_and(|s| s.status.is_recording()), Ordering::Relaxed);
                 if last.as_ref() != Some(&snapshot) {
                     let _ = app.emit("status", &snapshot);
                     last = Some(snapshot);

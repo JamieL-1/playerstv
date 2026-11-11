@@ -19,6 +19,9 @@ use wasapi::{
     AudioCaptureClient, AudioClient, DeviceEnumerator, Direction, Handle, SampleType, StreamMode, WaveFormat,
 };
 
+use windows::Win32::Foundation::HANDLE;
+use windows::Win32::System::Threading::{AvRevertMmThreadCharacteristics, AvSetMmThreadCharacteristicsW};
+
 use crate::pipe::{self, PipeServer};
 
 const BYTES_PER_FRAME: usize = 4 * AUDIO_CHANNELS as usize;
@@ -137,6 +140,7 @@ fn run(source: AudioSource, server: &PipeServer, stop: &AtomicBool, origin: Inst
         return Ok(());
     }
     let _ = wasapi::initialize_mta();
+    let _mmcss = AudioPriority::join();
 
     // If the source can't be opened (no mic plugged in, etc.) keep feeding
     // silence so the track stays valid for the whole recording.
@@ -151,7 +155,9 @@ fn run(source: AudioSource, server: &PipeServer, stop: &AtomicBool, origin: Inst
     let mut written: u64 = 0;
     let mut packet = Vec::new();
     let silence = vec![0u8; BYTES_PER_FRAME * MAX_AHEAD_FRAMES as usize];
-    let mut stats = Stats::default();
+    // The counters feed a debug-level log line; without it, don't scan
+    // every sample for the peak.
+    let mut stats = Stats { enabled: tracing::enabled!(tracing::Level::DEBUG), ..Stats::default() };
     let pad_to = |written: &mut u64, upto: u64, stats: &mut Stats| -> Result<()> {
         while *written < upto {
             let n = (upto - *written).min(MAX_AHEAD_FRAMES) as usize;
@@ -211,6 +217,35 @@ fn run(source: AudioSource, server: &PipeServer, stop: &AtomicBool, origin: Inst
     Ok(())
 }
 
+/// Runs the current thread as a Windows "Audio" multimedia task until
+/// dropped, so a game using every core can't keep it from emptying WASAPI's
+/// buffer in time. A late read there shows up as padded silence followed by
+/// dropped sound.
+struct AudioPriority(HANDLE);
+
+impl AudioPriority {
+    fn join() -> Option<Self> {
+        let mut task_index = 0u32;
+        // SAFETY: plain FFI call with a 'static task name and a valid
+        // out-pointer; it only affects the calling thread.
+        match unsafe { AvSetMmThreadCharacteristicsW(windows::core::w!("Audio"), &mut task_index) } {
+            Ok(handle) => Some(Self(handle)),
+            Err(e) => {
+                tracing::debug!("audio feeder stays at normal priority: {e}");
+                None
+            }
+        }
+    }
+}
+
+impl Drop for AudioPriority {
+    fn drop(&mut self) {
+        // SAFETY: the handle came from AvSetMmThreadCharacteristicsW on this
+        // thread (the guard never leaves `run`) and is reverted once.
+        let _ = unsafe { AvRevertMmThreadCharacteristics(self.0) };
+    }
+}
+
 /// Periodic debug counters, to diagnose silent or glitchy tracks.
 struct Stats {
     since: Instant,
@@ -219,11 +254,14 @@ struct Stats {
     padded: u64,
     dropped: u64,
     peak: f32,
+    /// Whether the counters will be logged. Off, the peak isn't tracked:
+    /// that costs a pass over every sample.
+    enabled: bool,
 }
 
 impl Default for Stats {
     fn default() -> Self {
-        Self { since: Instant::now(), captured: 0, silent_packets: 0, padded: 0, dropped: 0, peak: 0.0 }
+        Self { since: Instant::now(), captured: 0, silent_packets: 0, padded: 0, dropped: 0, peak: 0.0, enabled: false }
     }
 }
 
@@ -231,13 +269,15 @@ impl Stats {
     fn observe(&mut self, bytes: &[u8], silent: bool) {
         self.captured += (bytes.len() / BYTES_PER_FRAME) as u64;
         self.silent_packets += silent as u64;
-        for s in bytes.as_chunks::<4>().0 {
-            self.peak = self.peak.max(f32::from_le_bytes(*s).abs());
+        if self.enabled && !silent {
+            for s in bytes.as_chunks::<4>().0 {
+                self.peak = self.peak.max(f32::from_le_bytes(*s).abs());
+            }
         }
     }
 
     fn maybe_log(&mut self, source: &AudioSource) {
-        if self.since.elapsed() >= Duration::from_secs(5) {
+        if self.enabled && self.since.elapsed() >= Duration::from_secs(5) {
             tracing::debug!(
                 "{source:?}: captured {} padded {} dropped {} frames, {} silent packets, peak {:.3}",
                 self.captured,
@@ -246,7 +286,7 @@ impl Stats {
                 self.silent_packets,
                 self.peak
             );
-            *self = Self::default();
+            *self = Self { enabled: true, ..Self::default() };
         }
     }
 }

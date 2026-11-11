@@ -51,6 +51,20 @@ impl Container {
         self == Container::Matroska
     }
 
+    /// Whether a segment can be read while ffmpeg is still writing it.
+    /// `record_args` has ffmpeg flush MPEG-TS after every packet, so the
+    /// file on disk is complete up to the newest frame; a half-written
+    /// Matroska segment isn't safe to read.
+    pub fn readable_while_written(self) -> bool {
+        self == Container::MpegTs
+    }
+
+    /// The container of a segment file, from its extension.
+    pub fn of(path: &Path) -> Option<Self> {
+        let ext = path.extension()?.to_str()?;
+        [Container::MpegTs, Container::Matroska].into_iter().find(|c| c.extension() == ext)
+    }
+
     /// ffmpeg output pattern, e.g. `seg_%06d.ts`.
     pub fn pattern(self) -> String {
         format!("seg_%06d.{}", self.extension())

@@ -370,8 +370,15 @@ pub fn record_args(spec: &RecordSpec) -> Vec<String> {
         "-segment_format", container.muxer(),
         "-segment_start_number", &spec.start_index.to_string(),
         "-reset_timestamps", if container.reset_timestamps() { "1" } else { "0" },
-        &pattern.to_string_lossy(),
     ]);
+    if container.readable_while_written() {
+        // Write each packet to the file as it's muxed instead of 32 KB at a
+        // time, so a clip can take the segment still being written and
+        // needn't wait for it to end. Unflushed, that segment was empty on
+        // disk for up to a second at low bitrates.
+        push(&["-segment_format_options", "flush_packets=1"]);
+    }
+    push(&[&pattern.to_string_lossy()]);
     a
 }
 
@@ -667,6 +674,9 @@ mod tests {
         let h264 = args_for(Codec::H264);
         assert!(h264.contains("-segment_format mpegts -segment_start_number 0 -reset_timestamps 0"));
         assert!(h264.ends_with("seg_%06d.ts"));
+        // Only TS is read while it's written, so only TS is flushed per packet.
+        assert!(h264.contains("-reset_timestamps 0 -segment_format_options flush_packets=1 buf"), "{h264}");
+        assert!(!av1.contains("flush_packets"));
     }
 
     #[test]

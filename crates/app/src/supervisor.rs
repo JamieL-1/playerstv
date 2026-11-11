@@ -3,7 +3,7 @@
 //! clips/sessions on request → tear down when the game closes.
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -15,7 +15,7 @@ use ptv_core::clip::{self, ExportKind};
 use ptv_core::config::{Config, VideoConfig};
 use ptv_core::ffmpeg_args::{self, CaptureTarget};
 use ptv_core::profile::{safe_name, ProfileMatcher};
-use ptv_core::ring::{self, Segment};
+use ptv_core::ring::{self, Container, Segment};
 use ptv_core::storage;
 
 use crate::export;
@@ -28,11 +28,24 @@ const SCAN_INTERVAL: Duration = Duration::from_secs(2);
 const RESIZE_SETTLE: Duration = Duration::from_secs(2);
 const META_FILE: &str = "meta.txt";
 const SESSION_FILE: &str = "session.txt";
+/// Holds the path of the recording a closed game's session is being saved to.
+const SAVING_FILE: &str = "saving.txt";
 /// A full session that ends on its own this soon after the game was found
 /// (the encoder restarting, the game or playerstv closing) is dropped, not
 /// saved. That footage is the game settling as it launches (League's window
 /// opens square, then resizes), not play.
 const LAUNCH_SETTLE: Duration = Duration::from_secs(10);
+/// How often old segments are deleted. A segment only becomes old enough
+/// when a new one starts, so looking more often than that finds nothing
+/// (and a long full session's buffer is thousands of files to list).
+const PRUNE_INTERVAL: Duration = Duration::from_secs(ring::SEGMENT_SECONDS as u64);
+/// A clip takes the segment still being written once it's this old. A
+/// younger one may not hold a first packet of every track yet, which ffmpeg
+/// needs to read it. Costs a clip at most this long, once in four saves.
+const LIVE_SEGMENT_MIN_AGE: Duration = Duration::from_millis(500);
+/// When quitting, saves are waited for as long as they keep writing; one
+/// that writes nothing for this long is given up on.
+const EXPORT_STALL: Duration = Duration::from_secs(120);
 
 #[derive(Debug)]
 pub enum Command {
@@ -97,8 +110,11 @@ pub struct Supervisor {
     sink: EventSink,
     active: Option<Active>,
     exports_in_flight: Arc<AtomicUsize>,
+    /// Goes up whenever a running save's output grows: see [`EXPORT_STALL`].
+    export_progress: Arc<AtomicU64>,
     storage: SharedStoragePolicy,
     last_scan: Option<Instant>,
+    last_prune: Option<Instant>,
     last_status: Option<Status>,
 }
 
@@ -113,7 +129,9 @@ impl Supervisor {
             sink,
             active: None,
             exports_in_flight: Arc::new(AtomicUsize::new(0)),
+            export_progress: Arc::new(AtomicU64::new(0)),
             last_scan: None,
+            last_prune: None,
             last_status: None,
         }
     }
@@ -181,7 +199,10 @@ impl Supervisor {
                     self.restart_recorder(&mut active);
                 }
                 watch_frame_rate(&mut active);
-                if self.exports_in_flight.load(Ordering::SeqCst) == 0 {
+                if self.last_prune.is_none_or(|t| t.elapsed() >= PRUNE_INTERVAL)
+                    && self.exports_in_flight.load(Ordering::SeqCst) == 0
+                {
+                    self.last_prune = Some(Instant::now());
                     if wants_encoder || active.recorder.is_some() {
                         prune(&active.dir, active.settings.buffer_seconds, active.session_from);
                     } else {
@@ -199,23 +220,33 @@ impl Supervisor {
     /// progress is saved (unless it's only just started) and continued in a
     /// new file, since the new encoder's output may not be concatenable with
     /// the old one's.
+    ///
+    /// The new encoder starts while the old one is still finishing its last
+    /// segment, so the footage lost in between is the longer of the two
+    /// waits rather than their sum.
     fn restart_recorder(&mut self, active: &mut Active) {
-        if let Some(rec) = active.recorder.take() {
-            rec.stop();
+        let mut old = active.recorder.take();
+        if let Some(rec) = &mut old {
+            rec.request_stop();
         }
-        let has_session_footage = active
-            .session_from
-            .is_some_and(|from| ring::scan(&active.dir).unwrap_or_default().iter().any(|s| s.index >= from));
-        let continue_session = active.session_from.is_some();
-        if has_session_footage && !just_launched(active) {
-            self.finish_session(active, false);
-        } else {
-            drop_session(active);
+        // The session so far belongs to the old encoder: its file ends
+        // where the new encoder's segments begin. session.txt stays until
+        // `begin_session` rewrites it, so a crash in between loses nothing.
+        let session_from = active.session_from.take();
+        active.session_since = None;
+        let old_titles = active.audio_titles.clone();
+        start_recorder(&self.ffmpeg, active, old.is_some());
+        if let Some(rec) = old {
+            rec.wait_stopped();
         }
-        start_recorder(&self.ffmpeg, active);
-        if continue_session {
-            begin_session(active);
+        let Some(from) = session_from else { return };
+        let segs = session_segments(&active.dir, from, Some(active.epoch_from));
+        if just_launched(active) {
+            tracing::info!("dropped the full session recorded while {} was launching", active.window.profile.name);
+        } else if !segs.is_empty() {
+            self.save_session(active, segs, old_titles, Cleanup::None);
         }
+        begin_session(active);
     }
 
     fn start_game(&mut self, window: GameWindow) {
@@ -254,7 +285,7 @@ impl Supervisor {
         if active.settings.record_full_session {
             start_session(&self.ffmpeg, &mut active);
         } else if active.settings.replay_buffer {
-            start_recorder(&self.ffmpeg, &mut active);
+            start_recorder(&self.ffmpeg, &mut active, false);
         } else {
             tracing::info!("{} replay buffer is off, idle until a full session starts", active.window.profile.name);
         }
@@ -352,7 +383,7 @@ impl Supervisor {
             last: latest,
             seconds: active.settings.buffer_seconds,
         };
-        self.spawn_export(source, out, titles, ExportKind::Clip, None);
+        self.spawn_export(source, out, titles, ExportKind::Clip, Cleanup::None);
     }
 
     fn toggle_session(&mut self) {
@@ -379,17 +410,29 @@ impl Supervisor {
     }
 
     /// Exports everything since the session started. With `cleanup`, the
-    /// buffer folder is removed afterwards (the game has closed).
+    /// buffer folder is removed once it's saved (the game has closed).
     fn finish_session(&mut self, active: &mut Active, cleanup: bool) {
         let Some(from) = active.session_from.take() else { return };
         active.session_since = None;
-        let _ = std::fs::remove_file(active.dir.join(SESSION_FILE));
-        let segs: Vec<Segment> =
-            ring::scan(&active.dir).unwrap_or_default().into_iter().filter(|s| s.index >= from).collect();
+        let segs = session_segments(&active.dir, from, None);
+        let cleanup = if !cleanup {
+            let _ = std::fs::remove_file(active.dir.join(SESSION_FILE));
+            Cleanup::None
+        } else if segs.is_empty() {
+            Cleanup::Always(active.dir.clone())
+        } else {
+            // session.txt stays in the buffer until the file is written. If
+            // playerstv is killed first, or the save fails (a full disk),
+            // the next start finds the session and saves it then.
+            Cleanup::WhenSaved(active.dir.clone())
+        };
+        self.save_session(active, segs, active.audio_titles.clone(), cleanup);
+    }
+
+    fn save_session(&self, active: &Active, segs: Vec<Segment>, titles: Vec<String>, cleanup: Cleanup) {
         let out =
             clip::output_path(&self.cfg.output_dir, &active.window.profile.name, ExportKind::Session, Local::now());
-        let cleanup = cleanup.then(|| active.dir.clone());
-        self.spawn_export(ExportSource::Segments(segs), out, active.audio_titles.clone(), ExportKind::Session, cleanup);
+        self.spawn_export(ExportSource::Segments(segs), out, titles, ExportKind::Session, cleanup);
     }
 
     /// Applies the storage limit now, unless a save is in progress: that
@@ -409,19 +452,44 @@ impl Supervisor {
         out: PathBuf,
         titles: Vec<String>,
         kind: ExportKind,
-        cleanup: Option<PathBuf>,
+        cleanup: Cleanup,
     ) {
         let ffmpeg = self.ffmpeg.clone();
         let in_flight = self.exports_in_flight.clone();
+        let progress = self.export_progress.clone();
         let sink = self.sink.clone();
         let storage = self.storage.clone();
+        // A session saved while its game is still running is a big copy
+        // that nobody is waiting on: it gives way to the game and to the
+        // recording. Clips are small and wanted now; once the game has
+        // closed there's nothing left to give way to.
+        let background = kind == ExportKind::Session && matches!(cleanup, Cleanup::None);
         // Counted from now so pruning pauses while we wait for the segment.
         in_flight.fetch_add(1, Ordering::SeqCst);
         std::thread::spawn(move || {
             let started = Instant::now();
-            let segs = source.resolve();
-            let result = export::export(&ffmpeg, &segs, out, &titles, kind);
+            let run = export::Run {
+                background,
+                on_progress: &|| {
+                    progress.fetch_add(1, Ordering::Relaxed);
+                },
+            };
+            let out = clip::unique_path(out);
+            if let Cleanup::WhenSaved(dir) = &cleanup {
+                // So a start after being killed mid-save can remove the
+                // unfinished file before saving the session again.
+                let _ = std::fs::write(dir.join(SAVING_FILE), out.to_string_lossy().as_bytes());
+            }
+            let save = |segs: &[Segment]| export::export(&ffmpeg, segs, out.clone(), &titles, kind, &run);
+            let mut result = save(&source.resolve(true));
+            if let (Err(e), true) = (&result, source.reads_live_segment()) {
+                // Not seen in testing, but the segment being written is the
+                // one thing here ffmpeg didn't finish: try again without it.
+                tracing::warn!("saving with the segment still being written failed ({e:#}); waiting for it to end");
+                result = save(&source.resolve(false));
+            }
             let still_exporting = in_flight.fetch_sub(1, Ordering::SeqCst) > 1;
+            let saved = result.is_ok();
             match result {
                 Ok(path) => {
                     tracing::info!("saved {} in {:?}", path.display(), started.elapsed());
@@ -437,8 +505,12 @@ impl Supervisor {
             if !still_exporting {
                 enforce_storage_limit(&storage, &sink);
             }
-            if let Some(dir) = cleanup {
-                delete_when_idle(dir, in_flight);
+            match cleanup {
+                Cleanup::None => {}
+                Cleanup::WhenSaved(dir) if !saved => {
+                    tracing::warn!("keeping {} so the session can be saved at the next start", dir.display());
+                }
+                Cleanup::WhenSaved(dir) | Cleanup::Always(dir) => delete_when_idle(dir, in_flight),
             }
         });
     }
@@ -465,15 +537,28 @@ impl Supervisor {
             let segs: Vec<Segment> =
                 ring::scan(&dir).unwrap_or_default().into_iter().filter(|s| s.index >= from).collect();
             tracing::info!("recovering unsaved {game} session from {}", dir.display());
+            remove_unfinished_save(&dir);
             let out = clip::output_path(&self.cfg.output_dir, &game, ExportKind::Session, Local::now());
-            self.spawn_export(ExportSource::Segments(segs), out, titles, ExportKind::Session, Some(dir));
+            // Its second chance: the buffer goes whether or not this works.
+            self.spawn_export(ExportSource::Segments(segs), out, titles, ExportKind::Session, Cleanup::Always(dir));
         }
     }
 
+    /// Waits for saves in progress for as long as they keep writing. A long
+    /// session on a slow disk takes minutes to copy; cutting it off after a
+    /// fixed time left an unplayable file.
     fn wait_for_exports(&self) {
-        let deadline = Instant::now() + Duration::from_secs(120);
-        while self.exports_in_flight.load(Ordering::SeqCst) > 0 && Instant::now() < deadline {
+        let mut seen = self.export_progress.load(Ordering::Relaxed);
+        let mut since = Instant::now();
+        while self.exports_in_flight.load(Ordering::SeqCst) > 0 {
             std::thread::sleep(Duration::from_millis(100));
+            let now = self.export_progress.load(Ordering::Relaxed);
+            if now != seen {
+                (seen, since) = (now, Instant::now());
+            } else if since.elapsed() >= EXPORT_STALL {
+                tracing::warn!("a save has written nothing for {EXPORT_STALL:?}, quitting without it");
+                break;
+            }
         }
     }
 
@@ -511,13 +596,25 @@ impl Supervisor {
     }
 }
 
+/// What happens to a buffer folder after a save from it.
+enum Cleanup {
+    /// Nothing: the game is still running.
+    None,
+    /// Deleted once the save succeeds. If it fails, the folder (with its
+    /// session.txt) is left for the next start to try again.
+    WhenSaved(PathBuf),
+    /// Deleted whether or not the save succeeds.
+    Always(PathBuf),
+}
+
 enum ExportSource {
     Segments(Vec<Segment>),
-    /// The newest `seconds` of footage ending with segment `last`. That
-    /// segment was still being written when the hotkey was pressed, so we
-    /// wait for ffmpeg to close it: otherwise the last moments (the bit the
-    /// player actually wanted) would still be in ffmpeg's buffers. Segments
-    /// before `first` belong to an earlier encoder and are left out.
+    /// The newest `seconds` of footage ending with segment `last`, which
+    /// was still being written when the hotkey was pressed. MPEG-TS is
+    /// flushed to disk packet by packet, so it's read as it stands, up to
+    /// the newest frame. A Matroska (AV1) segment can't be read half
+    /// written, so there we wait for ffmpeg to close it. Segments before
+    /// `first` belong to an earlier encoder and are left out.
     ClipUpTo {
         dir: PathBuf,
         first: u64,
@@ -527,23 +624,80 @@ enum ExportSource {
 }
 
 impl ExportSource {
-    fn resolve(self) -> Vec<Segment> {
+    /// Whether [`ExportSource::resolve`] may hand back a segment that's
+    /// still being written.
+    fn reads_live_segment(&self) -> bool {
         match self {
-            ExportSource::Segments(s) => s,
-            ExportSource::ClipUpTo { dir, first, last, seconds } => {
-                let deadline = Instant::now() + Duration::from_secs(ring::SEGMENT_SECONDS as u64 + 2);
-                while !ring::segment_exists(&dir, last + 1) && Instant::now() < deadline {
-                    std::thread::sleep(Duration::from_millis(100));
-                }
-                let segs: Vec<Segment> = ring::scan(&dir)
-                    .unwrap_or_default()
-                    .into_iter()
-                    .filter(|s| (first..=last).contains(&s.index))
-                    .collect();
-                ring::select_for_clip(&segs, seconds).to_vec()
+            ExportSource::Segments(_) => false,
+            ExportSource::ClipUpTo { dir, last, .. } => {
+                let ts = dir.join(ring::segment_file_name(*last, Container::MpegTs));
+                Container::MpegTs.readable_while_written() && ts.exists()
             }
         }
     }
+
+    /// The segments to save. With `live`, the one still being written is
+    /// taken as it stands where its format allows; without, it's waited for.
+    fn resolve(&self, live: bool) -> Vec<Segment> {
+        match self {
+            ExportSource::Segments(s) => s.clone(),
+            ExportSource::ClipUpTo { dir, first, last, seconds } => {
+                let newest = dir.join(ring::segment_file_name(*last, Container::MpegTs));
+                if live && self.reads_live_segment() {
+                    let wait = live_segment_wait(segment_age(&newest));
+                    if !wait.is_zero() && !ring::segment_exists(dir, last + 1) {
+                        std::thread::sleep(wait);
+                    }
+                } else {
+                    let deadline = Instant::now() + Duration::from_secs(ring::SEGMENT_SECONDS as u64 + 2);
+                    while !ring::segment_exists(dir, last + 1) && Instant::now() < deadline {
+                        std::thread::sleep(Duration::from_millis(100));
+                    }
+                }
+                let segs: Vec<Segment> = ring::scan(dir)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter(|s| (*first..=*last).contains(&s.index))
+                    .collect();
+                ring::select_for_clip(&segs, *seconds).to_vec()
+            }
+        }
+    }
+}
+
+/// Deletes the recording a save from the buffer `dir` was writing when
+/// playerstv was killed: it has no index, so it can't be played. Only ever
+/// a file named like one of ours, at the path that save wrote down.
+fn remove_unfinished_save(dir: &Path) {
+    let Ok(path) = std::fs::read_to_string(dir.join(SAVING_FILE)) else { return };
+    let path = Path::new(path.trim());
+    if path.file_name().and_then(|n| n.to_str()).is_some_and(storage::is_recording_file) && path.is_file() {
+        match std::fs::remove_file(path) {
+            Ok(()) => tracing::info!("removed unfinished {}", path.display()),
+            Err(e) => tracing::warn!("couldn't remove unfinished {}: {e}", path.display()),
+        }
+    }
+}
+
+/// How long ago ffmpeg started writing the segment at `path`, if known.
+fn segment_age(path: &Path) -> Option<Duration> {
+    std::fs::metadata(path).ok()?.created().ok()?.elapsed().ok()
+}
+
+/// How much longer to leave a segment of this age before reading it while
+/// it's written: see [`LIVE_SEGMENT_MIN_AGE`]. An unknown age waits in full.
+fn live_segment_wait(age: Option<Duration>) -> Duration {
+    LIVE_SEGMENT_MIN_AGE.saturating_sub(age.unwrap_or_default())
+}
+
+/// The segments of a full session that began at segment `from`, up to but
+/// not including `until` (the first segment of a newer encoder).
+fn session_segments(dir: &Path, from: u64, until: Option<u64>) -> Vec<Segment> {
+    ring::scan(dir)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|s| s.index >= from && until.is_none_or(|end| s.index < end))
+        .collect()
 }
 
 fn matchers(cfg: &Config) -> Vec<ProfileMatcher> {
@@ -608,9 +762,12 @@ fn resize_settled(
     }
 }
 
-fn start_recorder(ffmpeg: &Path, active: &mut Active) {
+/// Starts an encoder. `beside_old` says the previous one is still writing
+/// its last segment: it may start one more before it stops, so the new
+/// encoder leaves that number free.
+fn start_recorder(ffmpeg: &Path, active: &mut Active, beside_old: bool) {
     active.pending_resize = None;
-    let start = ring::next_index(&ring::scan(&active.dir).unwrap_or_default());
+    let start = ring::next_index(&ring::scan(&active.dir).unwrap_or_default()) + beside_old as u64;
     active.epoch_from = start;
     match Recorder::start(ffmpeg, &active.window, &active.settings, &active.dir, start) {
         Ok(rec) => {
@@ -683,7 +840,7 @@ fn wants_encoder(active: &Active) -> bool {
 /// (replay buffer off), so the session begins at that encoder's first segment.
 fn start_session(ffmpeg: &Path, active: &mut Active) {
     if active.recorder.is_none() {
-        start_recorder(ffmpeg, active);
+        start_recorder(ffmpeg, active, false);
     }
     begin_session(active);
 }
@@ -875,6 +1032,64 @@ mod tests {
         let p1080 = VideoConfig { resolution: Resolution::P1080, ..Default::default() };
         assert_eq!(first_restart(&p1080, &[(3316, 2060); 4]), None);
         assert_eq!(first_restart(&p1080, &[(1900, 1030); 4]), Some(2));
+    }
+
+    #[test]
+    fn a_clip_reads_the_segment_being_written_once_it_has_every_track() {
+        assert_eq!(live_segment_wait(Some(Duration::from_millis(100))), Duration::from_millis(400));
+        assert_eq!(live_segment_wait(Some(Duration::from_secs(1))), Duration::ZERO);
+        assert_eq!(live_segment_wait(None), LIVE_SEGMENT_MIN_AGE);
+
+        let dir = temp_dir("live");
+        for i in 3..=5 {
+            std::fs::write(dir.join(ring::segment_file_name(i, Container::MpegTs)), b"x").unwrap();
+        }
+        let clip = ExportSource::ClipUpTo { dir: dir.clone(), first: 4, last: 5, seconds: 30 };
+        assert!(clip.reads_live_segment());
+        // Segment 5 is taken without waiting for a segment 6, and nothing
+        // from before the current encoder (segment 3).
+        let started = Instant::now();
+        let indices: Vec<u64> = clip.resolve(true).iter().map(|s| s.index).collect();
+        assert_eq!(indices, [4, 5]);
+        assert!(started.elapsed() < Duration::from_secs(2), "waited for the segment to end");
+
+        // AV1's Matroska segments can't be read half written.
+        std::fs::write(dir.join(ring::segment_file_name(9, Container::Matroska)), b"x").unwrap();
+        assert!(!ExportSource::ClipUpTo { dir: dir.clone(), first: 9, last: 9, seconds: 30 }.reads_live_segment());
+        assert!(!ExportSource::Segments(Vec::new()).reads_live_segment());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_restarted_session_ends_where_the_new_encoder_begins() {
+        let dir = temp_dir("session");
+        for i in [2, 3, 4, 6, 7] {
+            std::fs::write(dir.join(ring::segment_file_name(i, Container::MpegTs)), b"x").unwrap();
+        }
+        let indices = |from, until| session_segments(&dir, from, until).iter().map(|s| s.index).collect::<Vec<_>>();
+        assert_eq!(indices(3, None), [3, 4, 6, 7]);
+        // The new encoder started at 6, leaving 5 free for the old one.
+        assert_eq!(indices(3, Some(6)), [3, 4]);
+        assert_eq!(indices(6, Some(6)), [0u64; 0]);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn only_our_own_unfinished_recording_is_removed() {
+        let dir = temp_dir("unfinished");
+        let ours = dir.join("RuneLite_session_2026-10-21_14-03-22.mp4");
+        let other = dir.join("notes.mp4");
+        std::fs::write(&ours, b"half").unwrap();
+        std::fs::write(&other, b"keep").unwrap();
+
+        std::fs::write(dir.join(SAVING_FILE), other.to_string_lossy().as_bytes()).unwrap();
+        remove_unfinished_save(&dir);
+        assert!(other.exists(), "not a playerstv recording name");
+
+        std::fs::write(dir.join(SAVING_FILE), ours.to_string_lossy().as_bytes()).unwrap();
+        remove_unfinished_save(&dir);
+        assert!(!ours.exists());
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

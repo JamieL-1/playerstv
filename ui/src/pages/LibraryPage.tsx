@@ -261,6 +261,11 @@ const RecordingCard = memo(function RecordingCard({
             }
           }}
           className={cn(
+            // content-visibility: the browser skips laying out and painting
+            // cards scrolled out of view, so a library of hundreds costs
+            // about what one screenful does. The intrinsic size stands in
+            // for a skipped card's height (then its real one, once seen).
+            "[contain-intrinsic-size:auto_220px] [content-visibility:auto]",
             "group cursor-pointer overflow-hidden rounded-lg bg-card outline-none ring-1 ring-border transition hover:ring-primary/60 focus-visible:ring-2 focus-visible:ring-primary",
             menuOpen && "ring-primary/60",
           )}
