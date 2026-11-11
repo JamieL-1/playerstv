@@ -17,6 +17,7 @@ use ptv_core::config::{AudioSourceKind, Config};
 use ptv_core::ffmpeg_args::{self, AudioInput, CaptureTarget, RecordSpec};
 
 pub use ptv_common::process::{bind_to_our_lifetime, CREATE_NO_WINDOW};
+use ptv_common::process::{raise_gpu_priority, ABOVE_NORMAL_PRIORITY_CLASS};
 use ptv_common::sync::lock;
 
 const STDERR_TAIL: usize = 40;
@@ -86,8 +87,7 @@ impl Recorder {
             feeders.push(f);
         }
 
-        let (width, height) = detect::client_size(window.hwnd);
-        let target = CaptureTarget { hwnd: window.hwnd, width, height };
+        let target = detect::capture_target(window.hwnd);
         let video_summary = ffmpeg_args::describe(&ffmpeg_args::encode_plan(target, &cfg.video), &cfg.video);
         let spec = RecordSpec {
             target,
@@ -108,10 +108,11 @@ impl Recorder {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .creation_flags(CREATE_NO_WINDOW)
+            .creation_flags(CREATE_NO_WINDOW | ABOVE_NORMAL_PRIORITY_CLASS)
             .spawn()
             .with_context(|| format!("launching {}", ffmpeg.display()))?;
         bind_to_our_lifetime(&child);
+        let pid = child.id();
 
         let stderr_tail = Arc::new(Mutex::new(VecDeque::new()));
         if let Some(stderr) = child.stderr.take() {
@@ -132,9 +133,19 @@ impl Recorder {
         if let Some(stdout) = child.stdout.take() {
             let frames = frames.clone();
             std::thread::Builder::new().name("ffmpeg-progress".into()).spawn(move || {
+                let mut gpu_priority_tried = false;
                 for line in BufReader::new(stdout).lines().map_while(Result::ok) {
                     if let Some(n) = line.strip_prefix("frame=").and_then(|n| n.trim().parse().ok()) {
                         frames.store(n, Ordering::Relaxed);
+                        // Once, when ffmpeg first reports: by then it has
+                        // the graphics device the priority applies to.
+                        if !gpu_priority_tried {
+                            gpu_priority_tried = true;
+                            match raise_gpu_priority(pid) {
+                                Ok(class) => tracing::info!("ffmpeg GPU scheduling priority: {class}"),
+                                Err(e) => tracing::warn!("couldn't raise ffmpeg's GPU scheduling priority: {e}"),
+                            }
+                        }
                     }
                 }
             })?;
@@ -189,6 +200,13 @@ impl Recorder {
     /// Asks ffmpeg to finish the current segment and exit; kills it if it
     /// doesn't within a few seconds.
     pub fn stop(mut self) {
+        self.request_stop();
+        self.wait_stopped();
+    }
+
+    /// Tells ffmpeg to finish the current segment and exit, without waiting
+    /// for it. Follow with [`Recorder::wait_stopped`].
+    pub fn request_stop(&mut self) {
         for f in &self.feeders {
             f.signal_stop();
         }
@@ -196,6 +214,11 @@ impl Recorder {
             let _ = stdin.write_all(b"q");
             let _ = stdin.flush();
         }
+    }
+
+    /// Waits for ffmpeg to exit after [`Recorder::request_stop`]; kills it
+    /// if it doesn't within a few seconds.
+    pub fn wait_stopped(mut self) {
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
             match self.child.try_wait() {
@@ -206,7 +229,7 @@ impl Recorder {
                     let _ = self.child.wait();
                     break;
                 }
-                Ok(None) => std::thread::sleep(Duration::from_millis(50)),
+                Ok(None) => std::thread::sleep(Duration::from_millis(10)),
             }
         }
         self.feeders.clear();

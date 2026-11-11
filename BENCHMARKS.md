@@ -158,6 +158,25 @@ missed it because it always turned the mic off. The mix now has a graph of
 its own, `--mic` covers that setup, and `scripts/smoke.ps1` checks every
 audio setup before a release.
 
+**Update, 2026-11-11** (two 60 s rounds, so indicative only):
+
+- Windows Graphics Capture loses frames only while the game is the
+  foreground window and fills its monitor: the probe kept 65% then, with
+  delivery gaps of whole display refreshes, and 99% in a run where the
+  game had lost focus. Capturing the monitor through the same API kept 74%,
+  no better than the window.
+- Desktop Duplication kept 99.6% in that state, so playerstv records a game
+  that way while it's being played fullscreen at the monitor's own size,
+  and goes back to capturing the window the moment the game loses focus,
+  is minimised or stops filling the monitor, so other windows aren't
+  recorded.
+- With Desktop Duplication, B-frames cost frames: 97% kept with them at
+  preset p2 and 77% at p5, against 99.5% without them at p2 to p4. Those
+  recordings now use p4 without B-frames.
+- In the harness, dropped frames went from 29% to 0.2%. Without B-frames
+  the clip's bitrate rose from 19 to 27 Mbps, its cap, and SSIM went from
+  0.990 to 0.989.
+
 **playerstv is better on a metric** when the 95% interval of the difference
 (playerstv minus the other recorder) lies entirely on the better side of
 zero. If it straddles zero, the report says there's no measurable

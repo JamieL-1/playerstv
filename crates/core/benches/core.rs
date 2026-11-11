@@ -19,7 +19,7 @@ fn ffmpeg_command(c: &mut Criterion) {
     ];
     let dir = PathBuf::from(r"C:\buffer");
     let spec = RecordSpec {
-        target: CaptureTarget { hwnd: 0x1234, width: 2560, height: 1440 },
+        target: CaptureTarget { hwnd: 0x1234, width: 2560, height: 1440, fullscreen_output: None },
         video: &video,
         audio: &audio,
         mixed_track: true,

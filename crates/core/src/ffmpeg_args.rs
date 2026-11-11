@@ -1,14 +1,15 @@
 //! Builds the long-running capture/encode ffmpeg command.
 //!
-//! Video never leaves the GPU: `gfxcapture` (Windows Graphics Capture) yields
-//! D3D11 textures, scales them itself, and NVENC encodes them directly. Audio
-//! arrives as raw f32 PCM over named pipes fed by the capture crate.
+//! Video never leaves the GPU: the capture source yields D3D11 textures and
+//! NVENC encodes them directly. A game that fills its monitor is captured
+//! with `ddagrab` (Desktop Duplication); anything else with `gfxcapture`
+//! (Windows Graphics Capture), which records just the window and scales it
+//! itself. Audio arrives as raw f32 PCM over named pipes fed by the capture
+//! crate.
 //!
 //! Frames keep the time Windows captured them at (variable frame rate).
-//! Forcing them onto a fixed 1/fps grid used to lose about a third of a
-//! 60 fps game's frames: one that landed a little late left its slot to a
-//! repeat of the previous frame, then shared the next slot with its
-//! successor and was dropped.
+//! Forcing them onto a fixed 1/fps grid made every frame that landed a
+//! little late leave its slot to a repeat of the previous frame.
 
 use std::path::Path;
 
@@ -25,6 +26,23 @@ pub struct CaptureTarget {
     /// Current client-area size, used to keep the aspect ratio when scaling.
     pub width: u32,
     pub height: u32,
+    /// When the client area is exactly a monitor on the default GPU (the
+    /// one ffmpeg and NVENC use), that monitor's DXGI output index there:
+    /// borderless or exclusive fullscreen.
+    pub fullscreen_output: Option<u32>,
+}
+
+/// The Desktop Duplication output to record instead of the window, if any.
+///
+/// For a game filling its monitor, Windows Graphics Capture delivered only
+/// about 73% of a 60 fps game's frames, however it was set up, while
+/// Desktop Duplication delivered all of them. Duplication records the whole
+/// monitor, overlays and all, so it's only used when the game covers it.
+/// It's also only used at the monitor's own size: `scale_d3d11` can't
+/// scale its frames, so other sizes stay with `gfxcapture`, which can.
+pub fn duplicated_output(target: CaptureTarget, video: &VideoConfig) -> Option<u32> {
+    let output = target.fullscreen_output?;
+    (encoded_size(target, video) == (target.width, target.height)).then_some(output)
 }
 
 /// One raw-PCM audio input delivered on a named pipe.
@@ -54,8 +72,8 @@ pub struct RecordSpec<'a> {
 
 pub const MIXED_TRACK_TITLE: &str = "Mixed";
 
-/// Windows Graphics Capture may deliver frames this many times faster than
-/// the target rate, and [`pace_filter`] thins them out. Capping capture at
+/// The capture source may deliver frames this many times faster than the
+/// target rate, and [`pace_filter`] thins them out. Capping capture at
 /// exactly the target rate made Windows skip frames that arrived a little
 /// early, as frames of a 60 fps game shown on a faster monitor often do.
 const CAPTURE_HEADROOM: u32 = 2;
@@ -180,6 +198,8 @@ pub struct EncodePlan {
     pub preset: &'static str,
     /// Multipass (quarter-res).
     pub quality_modes: bool,
+    /// Three B-frames, the middle one a reference.
+    pub b_frames: bool,
     /// Split each frame across multiple NVENC engines (HEVC/AV1 only).
     pub split_frames: bool,
     pub cq: u32,
@@ -190,6 +210,12 @@ pub fn encode_plan(target: CaptureTarget, v: &VideoConfig) -> EncodePlan {
     let (width, height) = encoded_size(target, v);
     let pixels = width as u64 * height as u64;
     let heavy = pixels * v.fps as u64 > HEAVY_PIXEL_RATE;
+    // Desktop Duplication merges frames that arrive while the encoder is
+    // busy with the last one. With B-frames the encoder takes several
+    // frames in one go, long enough to miss the next: at 1440p60 that kept
+    // ~77% of frames with p5 and ~97% with p2. Without them p2 to p4 all
+    // kept 99.5%, multipass or not, and p5 a little less.
+    let duplicating = duplicated_output(target, v).is_some();
     let auto_cap = {
         let bits = pixels as f64 * v.fps as f64 * v.quality.cap_bits_per_pixel();
         ((bits / 1e6).round() as u32).clamp(4, 300)
@@ -197,8 +223,9 @@ pub fn encode_plan(target: CaptureTarget, v: &VideoConfig) -> EncodePlan {
     EncodePlan {
         width,
         height,
-        preset: if heavy { "p4" } else { "p5" },
+        preset: if heavy || duplicating { "p4" } else { "p5" },
         quality_modes: !heavy,
+        b_frames: !duplicating,
         split_frames: heavy && v.codec != Codec::H264,
         cq: v.quality.cq(v.codec),
         cap_mbps: v.bitrate_cap_mbps.unwrap_or(auto_cap),
@@ -227,15 +254,22 @@ pub fn record_args(spec: &RecordSpec) -> Vec<String> {
     // short of the frame rate.
     push(&["-progress", "pipe:1", "-stats_period", "2"]);
 
-    // Point sampling keeps 2× pixel-perfect; bicubic beats the default
-    // bilinear for every other rescale.
-    let scale_mode = if v.resolution == Resolution::Double { "point" } else { "bicubic" };
-    let (crop_right, crop_bottom) = capture_crop(spec.target);
-    let mut graph = format!(
-        "gfxcapture=hwnd={hwnd}:max_framerate={rate}:crop_right={crop_right}:crop_bottom={crop_bottom}:resize_mode=scale_aspect:scale_mode={scale_mode}:width={w}:height={h}:capture_cursor=1",
-        hwnd = spec.target.hwnd,
-        rate = v.fps * CAPTURE_HEADROOM,
-    );
+    let rate = v.fps * CAPTURE_HEADROOM;
+    let mut graph = match duplicated_output(spec.target, v) {
+        // dup_frames=0: by default ddagrab repeats the last frame to keep
+        // up its rate, which would hide missed frames and waste encoding.
+        Some(output) => format!("ddagrab=output_idx={output}:framerate={rate}:dup_frames=0:draw_mouse=1"),
+        None => {
+            // Point sampling keeps 2× pixel-perfect; bicubic beats the
+            // default bilinear for every other rescale.
+            let scale_mode = if v.resolution == Resolution::Double { "point" } else { "bicubic" };
+            let (crop_right, crop_bottom) = capture_crop(spec.target);
+            format!(
+                "gfxcapture=hwnd={hwnd}:max_framerate={rate}:crop_right={crop_right}:crop_bottom={crop_bottom}:resize_mode=scale_aspect:scale_mode={scale_mode}:width={w}:height={h}:capture_cursor=1",
+                hwnd = spec.target.hwnd,
+            )
+        }
+    };
     if !spec.audio.is_empty() {
         graph.push(',');
         graph.push_str(&align_filter(spec.audio_origin_unix_us));
@@ -289,11 +323,9 @@ pub fn record_args(spec: &RecordSpec) -> Vec<String> {
         "-maxrate", &format!("{cap_mbps}M"),
         "-bufsize", &format!("{}M", cap_mbps * 2),
         // Adaptive quantisation spends bits on detail (text, UI edges) rather
-        // than flat areas; B-frames as references are nearly free quality.
+        // than flat areas.
         "-spatial-aq", "1",
         "-temporal-aq", "1",
-        "-bf", "3",
-        "-b_ref_mode", "middle",
         // A keyframe every segment by time, since frames needn't come at
         // the full rate; -g only caps the run of frames between them.
         "-g", &gop,
@@ -313,6 +345,12 @@ pub fn record_args(spec: &RecordSpec) -> Vec<String> {
         "-fps_mode", "vfr",
         "-enc_time_base", "1/90000",
     ]);
+    if plan.b_frames {
+        // B-frames as references are nearly free quality.
+        push(&["-bf", "3", "-b_ref_mode", "middle"]);
+    } else {
+        push(&["-bf", "0"]);
+    }
     if plan.quality_modes {
         push(&["-multipass", "qres"]);
     }
@@ -332,8 +370,15 @@ pub fn record_args(spec: &RecordSpec) -> Vec<String> {
         "-segment_format", container.muxer(),
         "-segment_start_number", &spec.start_index.to_string(),
         "-reset_timestamps", if container.reset_timestamps() { "1" } else { "0" },
-        &pattern.to_string_lossy(),
     ]);
+    if container.readable_while_written() {
+        // Write each packet to the file as it's muxed instead of 32 KB at a
+        // time, so a clip can take the segment still being written and
+        // needn't wait for it to end. Unflushed, that segment was empty on
+        // disk for up to a second at low bitrates.
+        push(&["-segment_format_options", "flush_packets=1"]);
+    }
+    push(&[&pattern.to_string_lossy()]);
     a
 }
 
@@ -344,7 +389,7 @@ mod tests {
     use std::path::PathBuf;
 
     fn target() -> CaptureTarget {
-        CaptureTarget { hwnd: 0x1234, width: 1900, height: 1030 }
+        CaptureTarget { hwnd: 0x1234, width: 1900, height: 1030, fullscreen_output: None }
     }
 
     #[test]
@@ -408,7 +453,8 @@ mod tests {
         assert!(s.contains("-map [v] -map [mix] -map 0:a -map 1:a"));
         assert_eq!(track_titles(&spec), ["Mixed", "Game", "Mic"]);
         assert!(s.contains("-c:v hevc_nvenc -preset p5 -tune hq -rc vbr -cq 22 -b:v 0"));
-        assert!(s.contains("-spatial-aq 1 -temporal-aq 1 -bf 3 -b_ref_mode middle"));
+        assert!(s.contains("-spatial-aq 1 -temporal-aq 1"));
+        assert!(s.contains("-bf 3 -b_ref_mode middle"));
         assert!(s.contains("-multipass qres"));
         // -delay 0 disables lookahead, so asking for it only costs memory.
         assert!(!s.contains("lookahead"));
@@ -422,6 +468,56 @@ mod tests {
         assert!(s.contains("-c:a aac -b:a 160k"));
         assert!(s.contains("-segment_start_number 7"));
         assert!(args.last().unwrap().ends_with("seg_%06d.ts"));
+    }
+
+    fn fullscreen() -> CaptureTarget {
+        CaptureTarget { hwnd: 0x1234, width: 2560, height: 1440, fullscreen_output: Some(1) }
+    }
+
+    #[test]
+    fn fullscreen_games_use_desktop_duplication_without_b_frames() {
+        let v = VideoConfig::default();
+        let dir = PathBuf::from("buf");
+        let s = record_args(&RecordSpec {
+            target: fullscreen(),
+            video: &v,
+            audio: &[],
+            mixed_track: true,
+            audio_bitrate_kbps: 160,
+            segment_dir: &dir,
+            start_index: 0,
+            audio_origin_unix_us: 0,
+        })
+        .join(" ");
+        assert!(s.contains("-filter_complex ddagrab=output_idx=1:framerate=120:dup_frames=0:draw_mouse=1,select="));
+        assert!(!s.contains("gfxcapture"));
+        let plan = encode_plan(fullscreen(), &v);
+        assert_eq!((plan.preset, plan.quality_modes, plan.b_frames), ("p4", true, false));
+        assert!(s.contains("-preset p4"));
+        assert!(s.contains("-bf 0 -multipass qres"));
+        assert!(!s.contains("b_ref_mode"));
+    }
+
+    #[test]
+    fn desktop_duplication_only_at_the_monitors_own_size() {
+        let native = VideoConfig::default();
+        assert_eq!(duplicated_output(fullscreen(), &native), Some(1));
+        // Not covering a monitor: the window is captured.
+        assert_eq!(duplicated_output(target(), &native), None);
+        // Any scaling stays with gfxcapture, which can scale.
+        for resolution in [Resolution::P1080, Resolution::P2160] {
+            let v = VideoConfig { resolution, ..Default::default() };
+            assert_eq!(duplicated_output(fullscreen(), &v), None, "{resolution:?}");
+            assert_eq!(encode_plan(fullscreen(), &v).preset, "p5", "{resolution:?}");
+        }
+        let double = VideoConfig { resolution: Resolution::Double, ..Default::default() };
+        let fhd = CaptureTarget { width: 1920, height: 1080, ..fullscreen() };
+        assert_eq!(duplicated_output(fhd, &double), None, "2× of 1080p is a real rescale");
+        // 2× of 1440p is too big for H.264, so it records native anyway.
+        assert_eq!(duplicated_output(fullscreen(), &double), Some(1));
+        // A fixed size that happens to be the monitor's is no scaling.
+        let v = VideoConfig { resolution: Resolution::P1440, ..Default::default() };
+        assert_eq!(duplicated_output(fullscreen(), &v), Some(1));
     }
 
     #[test]
@@ -578,6 +674,9 @@ mod tests {
         let h264 = args_for(Codec::H264);
         assert!(h264.contains("-segment_format mpegts -segment_start_number 0 -reset_timestamps 0"));
         assert!(h264.ends_with("seg_%06d.ts"));
+        // Only TS is read while it's written, so only TS is flushed per packet.
+        assert!(h264.contains("-reset_timestamps 0 -segment_format_options flush_packets=1 buf"), "{h264}");
+        assert!(!av1.contains("flush_packets"));
     }
 
     #[test]

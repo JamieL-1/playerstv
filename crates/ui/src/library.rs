@@ -147,8 +147,14 @@ fn load_cache(path: &Path) -> HashMap<PathBuf, CacheEntry> {
 }
 
 fn save_cache(path: &Path, entries: &HashMap<PathBuf, CacheEntry>) {
-    let file = CacheFile { version: CACHE_VERSION, entries: entries.clone() };
-    let Ok(json) = serde_json::to_vec(&file) else { return };
+    /// [`CacheFile`] as it's written: borrowed, so saving doesn't copy
+    /// every entry first.
+    #[derive(Serialize)]
+    struct CacheFileRef<'a> {
+        version: u32,
+        entries: &'a HashMap<PathBuf, CacheEntry>,
+    }
+    let Ok(json) = serde_json::to_vec(&CacheFileRef { version: CACHE_VERSION, entries }) else { return };
     if let Some(dir) = path.parent() {
         let _ = std::fs::create_dir_all(dir);
     }
@@ -220,20 +226,21 @@ pub async fn list_recordings(app: AppHandle) -> Result<Vec<Recording>, String> {
         watch(&app, &cfg.output_dir);
         let lib = app.state::<Library>();
         let recs = storage::scan(&cfg.output_dir);
-        let mut out = {
-            let mut inner = lock(&lib.inner);
-            let (out, changed) = build(recs, &mut inner.cache, |p| match ptv_core::media::probe(p) {
-                Ok(info) => Some(info),
-                Err(e) => {
-                    tracing::debug!("probe {}: {e:#}", p.display());
-                    None
-                }
-            });
-            if changed {
-                save_cache(&paths::library_cache(), &inner.cache);
+        // Probing reads each new file's index from disk, and saving writes
+        // the cache file. Both happen on a copy, so the lock (which renames
+        // and the folder watcher also take) is only held to swap it in.
+        let mut cache = lock(&lib.inner).cache.clone();
+        let (mut out, changed) = build(recs, &mut cache, |p| match ptv_core::media::probe(p) {
+            Ok(info) => Some(info),
+            Err(e) => {
+                tracing::debug!("probe {}: {e:#}", p.display());
+                None
             }
-            out
-        };
+        });
+        if changed {
+            save_cache(&paths::library_cache(), &cache);
+            lock(&lib.inner).cache = cache;
+        }
         lib.thumbs.attach(&mut out);
         Ok(out)
     })
