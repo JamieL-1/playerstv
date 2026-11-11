@@ -117,8 +117,7 @@ fn main() -> Result<()> {
                     .zip(&c.indices)
                     .map(|(t, i)| format!("{:.3},{}", (*t - c.times[0]) as f64 / 10_000.0, i.map_or(-1, |i| i as i64)))
                     .collect();
-                std::fs::write(path, rows.join("
-"))?;
+                std::fs::write(path, rows.join("\n"))?;
             }
         }
         None => {
