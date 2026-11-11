@@ -81,9 +81,9 @@ struct Active {
     failures: u32,
     retry_at: Instant,
     last_error: Option<String>,
-    /// A window size that differs from the one being encoded, and when it
-    /// was first seen.
-    pending_resize: Option<((u32, u32), Instant)>,
+    /// A window size or fullscreen state that would record differently from
+    /// the running encoder, and when it was first seen.
+    pending_resize: Option<(CaptureTarget, Instant)>,
     /// See [`Recorder::low_fps`].
     low_fps: Option<u32>,
     /// When the game was found.
@@ -559,44 +559,50 @@ fn matchers(cfg: &Config) -> Vec<ProfileMatcher> {
         .collect()
 }
 
-/// True once the window has settled at a size that would encode to a
-/// different frame size, or need a different crop, than the running
-/// encoder's. gfxcapture fixes both at start, so without a restart a game
-/// that changes size after launch (RuneLite opening its sidebar, say) ends up
-/// letterboxed or resampled.
+/// True once the window has settled at a size, or in or out of being played
+/// fullscreen, such that it would record differently from the running
+/// encoder. The capture source fixes its frame size and crop at start, so
+/// without a restart a game that changes size after launch (RuneLite opening
+/// its sidebar, say) ends up letterboxed or resampled; and a game that stops
+/// being played fullscreen must stop being recorded by duplicating its
+/// monitor.
 fn window_resized(active: &mut Active) -> bool {
     let Some(rec) = &active.recorder else {
         active.pending_resize = None;
         return false;
     };
-    let size = detect::client_size(active.window.hwnd);
-    resize_settled(&mut active.pending_resize, rec.target, size, &active.settings.video, Instant::now())
+    let target = detect::capture_target(active.window.hwnd);
+    resize_settled(&mut active.pending_resize, rec.target, target, &active.settings.video, Instant::now())
 }
 
-/// [`window_resized`]'s decision for a window now `size` big, while
-/// `encoding` is what the encoder was started with. `pending` carries a
-/// changed size between calls.
+/// [`window_resized`]'s decision for the window as `target` describes it
+/// now, while `encoding` is what the encoder was started with. `pending`
+/// carries a change between calls.
 fn resize_settled(
-    pending: &mut Option<((u32, u32), Instant)>,
+    pending: &mut Option<(CaptureTarget, Instant)>,
     encoding: CaptureTarget,
-    size: (u32, u32),
+    target: CaptureTarget,
     video: &VideoConfig,
     now: Instant,
 ) -> bool {
-    let target = CaptureTarget { width: size.0, height: size.1, ..encoding };
-    // Minimised (0×0) isn't a new size: the window comes back as it was.
-    if size.0 == 0
-        || size.1 == 0
-        || (ffmpeg_args::encoded_size(target, video), ffmpeg_args::capture_crop(target))
-            == (ffmpeg_args::encoded_size(encoding, video), ffmpeg_args::capture_crop(encoding))
-    {
+    let duplicated = |t| ffmpeg_args::duplicated_output(t, video);
+    // The monitor is being recorded and the game no longer has it to itself
+    // (alt-tabbed, minimised, moved): go back to recording only the window
+    // straight away, before more of what else is on the monitor is caught.
+    if duplicated(encoding).is_some() && duplicated(target).is_none() {
+        *pending = None;
+        return true;
+    }
+    let records_as = |t| (ffmpeg_args::encoded_size(t, video), ffmpeg_args::capture_crop(t), duplicated(t));
+    // Minimised (0×0) isn't a change: the window comes back as it was.
+    if target.width == 0 || target.height == 0 || records_as(target) == records_as(encoding) {
         *pending = None;
         return false;
     }
     match *pending {
-        Some((seen, since)) if seen == size => now.duration_since(since) >= RESIZE_SETTLE,
+        Some((seen, since)) if seen == target => now.duration_since(since) >= RESIZE_SETTLE,
         _ => {
-            *pending = Some((size, now));
+            *pending = Some((target, now));
             false
         }
     }
@@ -803,15 +809,40 @@ mod tests {
         d
     }
 
-    const ENCODING: CaptureTarget = CaptureTarget { hwnd: 1, width: 1658, height: 1030 };
+    const ENCODING: CaptureTarget = CaptureTarget { hwnd: 1, width: 1658, height: 1030, fullscreen_output: None };
 
-    /// Feeds `sizes` one second apart; returns the call that said restart.
-    fn first_restart(video: &VideoConfig, sizes: &[(u32, u32)]) -> Option<usize> {
+    /// Feeds `targets` one second apart to an encoder started on `encoding`;
+    /// returns the call that said restart.
+    fn first_restart_from(encoding: CaptureTarget, video: &VideoConfig, targets: &[CaptureTarget]) -> Option<usize> {
         let start = Instant::now();
         let mut pending = None;
-        sizes.iter().enumerate().position(|(i, &size)| {
-            resize_settled(&mut pending, ENCODING, size, video, start + Duration::from_secs(i as u64))
+        targets.iter().enumerate().position(|(i, &target)| {
+            resize_settled(&mut pending, encoding, target, video, start + Duration::from_secs(i as u64))
         })
+    }
+
+    /// [`first_restart_from`] for a windowed game going through `sizes`.
+    fn first_restart(video: &VideoConfig, sizes: &[(u32, u32)]) -> Option<usize> {
+        let targets: Vec<CaptureTarget> =
+            sizes.iter().map(|&(width, height)| CaptureTarget { width, height, ..ENCODING }).collect();
+        first_restart_from(ENCODING, video, &targets)
+    }
+
+    #[test]
+    fn going_in_or_out_of_fullscreen_restarts() {
+        let v = VideoConfig::default();
+        let windowed = CaptureTarget { width: 2560, height: 1440, ..ENCODING };
+        let fullscreen = CaptureTarget { fullscreen_output: Some(0), ..windowed };
+        // Same size, but now it fills its monitor: duplicate the monitor.
+        assert_eq!(first_restart_from(windowed, &v, &[fullscreen; 3]), Some(2));
+        // Back to capturing the window the moment it stops being played
+        // fullscreen, minimised included: the monitor now shows other things.
+        assert_eq!(first_restart_from(fullscreen, &v, &[windowed; 3]), Some(0));
+        let minimised = CaptureTarget { width: 0, height: 0, ..windowed };
+        assert_eq!(first_restart_from(fullscreen, &v, &[minimised; 3]), Some(0));
+        // At a scaled resolution both are recorded from the window anyway.
+        let p1080 = VideoConfig { resolution: Resolution::P1080, ..Default::default() };
+        assert_eq!(first_restart_from(windowed, &p1080, &[fullscreen; 3]), None);
     }
 
     #[test]

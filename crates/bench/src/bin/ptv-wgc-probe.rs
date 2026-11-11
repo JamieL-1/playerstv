@@ -64,6 +64,13 @@ struct Args {
     /// Extra gfxcapture options for `--ffmpeg`, e.g. `scale_mode=bicubic`.
     #[arg(long, default_value = "")]
     gfx_opts: String,
+    /// A whole capture filter for `--ffmpeg`, replacing gfxcapture on the
+    /// game window, e.g. `ddagrab=output_idx=0:framerate=120:dup_frames=0`.
+    #[arg(long)]
+    filter: Option<String>,
+    /// Write each delivered frame's capture time (ms) and index here.
+    #[arg(long)]
+    dump: Option<PathBuf>,
     /// Encoder arguments for `--ffmpeg`, replacing the fast default.
     #[arg(long, default_value = "-c:v h264_nvenc -preset p1 -cq 19", allow_hyphen_values = true)]
     encode: String,
@@ -103,6 +110,16 @@ fn main() -> Result<()> {
         Some(c) => {
             let label = format!("own WGC, {} buffers, min interval {} ms", args.buffers, args.min_interval_ms);
             summarise(&label, c.delivered, &c.indices, &log, focused);
+            if let Some(path) = &args.dump {
+                let rows: Vec<String> = c
+                    .times
+                    .iter()
+                    .zip(&c.indices)
+                    .map(|(t, i)| format!("{:.3},{}", (*t - c.times[0]) as f64 / 10_000.0, i.map_or(-1, |i| i as i64)))
+                    .collect();
+                std::fs::write(path, rows.join("
+"))?;
+            }
         }
         None => {
             let r = ptv_bench::analyze::analyze(&ffmpeg_exe(), &clip, log.pattern, Some(&log.frames))?;
@@ -140,6 +157,8 @@ fn summarise(label: &str, delivered: usize, indices: &[Option<u64>], log: &Frame
 
 struct Captured {
     delivered: usize,
+    /// Each frame's `SystemRelativeTime`, in 100 ns units.
+    times: Vec<i64>,
     indices: Vec<Option<u64>>,
 }
 
@@ -200,6 +219,7 @@ fn capture(args: &Args) -> Result<Captured> {
         (0..READBACK_LAG + 1).map(|_| staging_row(&device, width)).collect::<Result<_>>()?;
     let mut indices = Vec::new();
     let mut delivered = 0usize;
+    let mut times = Vec::new();
 
     session.StartCapture()?;
     let end = Instant::now() + Duration::from_secs(args.seconds);
@@ -209,6 +229,7 @@ fn capture(args: &Args) -> Result<Captured> {
         }
         while let Ok(frame) = pool.TryGetNextFrame() {
             let surface = frame.Surface()?;
+            times.push(frame.SystemRelativeTime()?.Duration);
             // SAFETY: the surface wraps a D3D11 texture on our device, which
             // the frame keeps alive until it's dropped below; the copy box
             // lies inside both textures.
@@ -230,7 +251,7 @@ fn capture(args: &Args) -> Result<Captured> {
     for n in delivered.saturating_sub(READBACK_LAG)..delivered {
         indices.push(read_index(&context, &staging[n % staging.len()], width)?);
     }
-    Ok(Captured { delivered, indices })
+    Ok(Captured { delivered, times, indices })
 }
 
 fn capture_item(hwnd: HWND) -> Result<GraphicsCaptureItem> {
@@ -288,13 +309,16 @@ fn run_ffmpeg(args: &Args, clip: &Path) -> Result<()> {
     let hwnd = unsafe { FindWindowW(windows::core::w!("ptv-bench-game"), None) }.context("no game window")?;
     let status = Command::new(ffmpeg_exe())
         .args(["-hide_banner", "-nostats", "-loglevel", "error", "-y", "-filter_complex"])
-        .arg(format!(
-            "gfxcapture=hwnd={}:max_framerate={}{}{}[v]",
-            hwnd.0 as usize,
-            args.fps * 2,
-            if args.gfx_opts.is_empty() { "" } else { ":" },
-            args.gfx_opts
-        ))
+        .arg(match &args.filter {
+            Some(filter) => format!("{filter}[v]"),
+            None => format!(
+                "gfxcapture=hwnd={}:max_framerate={}{}{}[v]",
+                hwnd.0 as usize,
+                args.fps * 2,
+                if args.gfx_opts.is_empty() { "" } else { ":" },
+                args.gfx_opts
+            ),
+        })
         .args(["-map", "[v]", "-t", &args.seconds.to_string(), "-fps_mode", "vfr", "-enc_time_base", "1/90000"])
         .args(args.encode.split_whitespace())
         .arg(clip)
